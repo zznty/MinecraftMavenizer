@@ -258,8 +258,10 @@ class MCPTask {
         this.data.put("mappings.channel", mappings.channel());
         this.data.put("mappings.version", mappings.version());
         this.data.put("mappings.zip", local(mappings.getCsvZip().execute(), prefix + "/mappings.zip"));
-        this.data.put("mappings.map2obf", local(mappings.getMapped2Obf().execute(), prefix + "/mappings.map2obf.tsrg.gz"));
-        this.data.put("mappings.map2srg", local(mappings.getMapped2Srg().execute(), prefix + "/mappings.map2srg.tsrg.gz"));
+        if (MCPConfigRepo.isObfuscated(this.mcp.getConfig().version)) {
+            this.data.put("mappings.map2obf", local(mappings.getMapped2Obf().execute(), prefix + "/mappings.map2obf.tsrg.gz"));
+            this.data.put("mappings.map2srg", local(mappings.getMapped2Srg().execute(), prefix + "/mappings.map2srg.tsrg.gz"));
+        }
     }
 
     private String decompile(List<File> ats, List<File> sas) {
