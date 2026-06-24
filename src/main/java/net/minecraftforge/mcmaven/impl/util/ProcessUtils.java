@@ -449,6 +449,8 @@ public final class ProcessUtils {
     private static String getMainClass(File tool) throws IOException {
         try (var jar = new JarFile(tool)) {
             return jar.getManifest().getMainAttributes().getValue(Attributes.Name.MAIN_CLASS);
+        } catch (IOException e) {
+            throw new IOException("Could not find main class for " + tool.getAbsolutePath() + " try deleting that file", e);
         }
     }
 
