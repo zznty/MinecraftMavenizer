@@ -270,4 +270,19 @@ public class StupidHacks {
             return artifact.withVersion("1.7.10-fixed");
         return artifact;
     }
+
+
+    // Old versions of MCPConfig or other data driven systems may reference servers that have moved
+    // This is a centralized place to fix all that
+    public static String fixLegacyRepoUrls(String repo) {
+        // Forge moved to maven.minecraftforge.net
+        if ("http://files.minecraftforge.net/maven/".equals(repo))
+            return Constants.FORGE_MAVEN;
+
+        // Maven central forced HTTPS usage, so upgrade it
+        if (repo.startsWith("http://") && repo.contains("maven.org"))
+            return "https://" + repo.substring(7);
+
+        return repo;
+    }
 }

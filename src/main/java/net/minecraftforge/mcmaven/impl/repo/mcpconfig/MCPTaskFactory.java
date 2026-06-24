@@ -837,7 +837,8 @@ public class MCPTaskFactory {
 
     private File execute(String name, List<TaskOrArg> jvmArgs, List<TaskOrArg> runArgs, MCPConfig.Function func, File log, File output) {
         // First download the tool
-        var maven = new MavenCache("mcp-tools", func.repo, this.side.getMCP().getCache().root());
+        var repo = StupidHacks.fixLegacyRepoUrls(func.repo);
+        var maven = new MavenCache("mcp-tools", repo, this.side.getMCP().getCache().root());
         var toolA = StupidHacks.fixLegacyTools(Artifact.from(func.version));
         var tool = maven.download(toolA);
 
