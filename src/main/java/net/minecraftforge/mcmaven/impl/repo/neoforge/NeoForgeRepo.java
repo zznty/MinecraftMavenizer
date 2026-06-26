@@ -99,11 +99,28 @@ public final class NeoForgeRepo extends Repo {
         // Download NFRT fat JAR
         var nfrtJar = neoforgeMaven.download(Constants.NFRT);
 
+        // FancyModLoader changed its dev-mode game layout between major versions:
+        //
+        //  * FML 11+ (MC 1.21.11 / NeoForge 26.x): Minecraft and NeoForge live in SEPARATE jars on the
+        //    classpath. We request the vanilla `gameJar` (patched MC, no NeoForge classes) and supply the
+        //    NeoForge code via the published `universal` jar.
+        //
+        //  * FML 4.x (MC 1.21.1 / NeoForge 21.1.x): Minecraft and NeoForge must be COMBINED in a single jar
+        //    (the FML mod marker, mixins config and jar-in-jar coremods all ride along), with the Minecraft
+        //    resources split out into a separate `client-extra` jar. We request `gameJarWithNeoForge` plus
+        //    `clientResources`, and do NOT emit a separate universal jar.
+        //
+        // The moddev-config's `modules` list (the BootstrapLauncher module path) is the structural signal:
+        // it is populated for the FML-4.x module-path launch and empty for the FML-11 flat-classpath launch.
+        var combined = info.config() != null && info.config().modules != null && !info.config().modules.isEmpty();
+
         // NFRT cache and work directories
         var nfrtHome = new File(cache.root(), "nfrt-home");
         var nfrtWork = new File(build, "nfrt-work");
         var compiledJar = new File(build, "compiled.jar");
         var sourcesJar = new File(build, "sources.jar");
+        // Minecraft resources (client-extra) — only produced/used in the FML-4.x combined layout.
+        var resourcesJar = new File(build, "client-extra.jar");
 
         // Parchment data download (if requested)
         final File parchmentData;
@@ -115,12 +132,8 @@ public final class NeoForgeRepo extends Repo {
             parchmentData = null;
         }
 
-        // NFRT invocation task — produces the patched Minecraft jar AND sources jar in one run.
-        //
-        // We request the *vanilla* gameJar (patched Minecraft, NO NeoForge classes), exactly like
-        // ModDevGradle does for MC 1.21.11+. The NeoForge code itself is supplied separately by the
-        // NeoForge `universal` jar (added as a POM dependency). This is required because FancyModLoader's
-        // dev-mode GameLocator expects Minecraft and NeoForge to live in *separate* jars on the classpath.
+        // NFRT invocation task — produces the main game jar (+ sources, + client-extra for the combined
+        // layout) in one run. See the `combined` comment above for the two layouts.
         //
         // The Mavenizer owns all caching: NFRT runs with --disable-cache, but we wrap it in our own
         // HashStore check so the (expensive, ~minutes-long) NFRT invocation is skipped on every
@@ -129,15 +142,18 @@ public final class NeoForgeRepo extends Repo {
             var cacheKey = Util.cache(compiledJar)
                 .add("neoforge", version)
                 .add("nfrt", Constants.NFRT.toString())
+                .add("layout", combined ? "combined" : "separate")
                 .add("mappings", mappingChannel + '-' + mappingVersion);
             if (parchmentData != null)
                 cacheKey.add("parchment", parchmentData);
 
-            // checkCache verifies compiledJar exists + the key matches; we also require sourcesJar.
-            if (sourcesJar.exists() && Mavenizer.checkCache(compiledJar, cacheKey))
+            // checkCache verifies compiledJar exists + the key matches; we also require the aux jars.
+            var auxReady = sourcesJar.exists() && (!combined || resourcesJar.exists());
+            if (auxReady && Mavenizer.checkCache(compiledJar, cacheKey))
                 return compiledJar;
 
-            runNfrt(version, nfrtJar, nfrtHome, nfrtWork, compiledJar, sourcesJar, parchmentData);
+            runNfrt(version, nfrtJar, nfrtHome, nfrtWork, compiledJar, sourcesJar,
+                combined ? resourcesJar : null, parchmentData, combined);
             cacheKey.save();
             return compiledJar;
         });
@@ -151,13 +167,27 @@ public final class NeoForgeRepo extends Repo {
             outputJson.put("mcp.version", () -> info.neoformVersion() != null ? info.neoformVersion() : "UNKNOWN");
             outputJson.put("mappings.channel", () -> mappingChannel);
             outputJson.put("mappings.version", () -> mappingVersion);
+
+            // On obfuscated Minecraft (<= 1.21.11) ForgeGradle's SlimeLauncher integration requires
+            // mappings.srg.file/obf.file. NeoForge/FancyModLoader runs in Mojmap with no runtime SRG remap,
+            // so emit shared no-op identity mappings purely to satisfy the launcher.
+            if (MCPConfigRepo.isObfuscated(mcVersion))
+                emitNoopSrgMappings(build, mcVersion, outputJson);
+
+            // Module-path entries for BootstrapLauncher's '-p {modules}' run argument. Present on FML
+            // versions that boot via the module path (MC 1.21.1 / FML 4.x); absent on newer configs (26.x).
+            var modules = info.config() != null ? info.config().modules : null;
+            if (modules == null || modules.isEmpty())
+                outputJson.put("patcher.modules", () -> "");
+            else
+                outputJson.put("patcher.modules", () -> String.join(",", modules));
         }
 
         var name = Artifact.from(Constants.NEOFORGE_GROUP, Constants.NEOFORGE_NAME, version);
 
         // POM
         var pom = pending("NeoForge POM",
-            pomTask(build, artifact, info),
+            pomTask(build, artifact, info, combined),
             name.withExtension("pom"), false);
 
         // Metadata zip (version.json + runs.json for SlimeLauncher)
@@ -170,31 +200,41 @@ public final class NeoForgeRepo extends Repo {
             name.withClassifier("sources"), true,
             sourceVariant(mappings));
 
-        // NeoForge `universal` jar — emitted into our own repo under the `universal` classifier so the
-        // self-referential module dependency (neoforge -> neoforge:universal) resolves locally. This jar
-        // carries the NeoForge classes + FML markers as a separate root from the patched-Minecraft main jar.
-        var universalTask = Task.named("download[neoforge-universal][" + version + "]", () ->
-            neoforgeMaven.download(Artifact.from(Constants.NEOFORGE_ARTIFACT + ':' + version + ":universal")));
-        var universal = pending("Universal", universalTask,
-            name.withClassifier("universal"), true);
+        // The secondary game root, layout-dependent:
+        //  * separate (FML 11): the published NeoForge `universal` jar carries the NeoForge classes + FML
+        //    markers as a separate classpath root from the patched-Minecraft main jar.
+        //  * combined (FML 4.x): the main jar already contains the NeoForge classes; instead the secondary
+        //    root is the Minecraft `client-extra` resources jar (assets/data, recognised by FML via the
+        //    `client-extra` ignoreList entry). Carried under our own `client-extra` classifier.
+        final PendingArtifact secondary;
+        if (combined) {
+            var resourcesTask = Task.named("nfrt-resources[" + version + "]", Task.deps(nfrtTask), () -> resourcesJar);
+            secondary = pending("Client Extra", resourcesTask,
+                name.withClassifier("client-extra"), true);
+        } else {
+            var universalTask = Task.named("download[neoforge-universal][" + version + "]", () ->
+                neoforgeMaven.download(Artifact.from(Constants.NEOFORGE_ARTIFACT + ':' + version + ":universal")));
+            secondary = pending("Universal", universalTask,
+                name.withClassifier("universal"), true);
+        }
 
         // Compiled JAR (main artifact) with class variants
         var javaVersion = getJavaVersion(info);
-        var deps = collectDependencies(info, artifact);
+        var deps = collectDependencies(info, artifact, combined);
         var classes = pending("Classes", nfrtTask, name, false,
             () -> classVariants(mappings, javaVersion, deps, List.of()));
 
         var ret = new ArrayList<PendingArtifact>();
         ret.add(classes);
         ret.add(sources);
-        ret.add(universal);
+        ret.add(secondary);
         ret.add(metadata);
         ret.add(pom);
         return ret;
     }
 
     private void runNfrt(String neoforgeVersion, File nfrtJar, File nfrtHome,
-            File nfrtWork, File compiledJar, File sourcesJar, File parchmentData) {
+            File nfrtWork, File compiledJar, File sourcesJar, File resourcesJar, File parchmentData, boolean combined) {
         FileUtils.ensure(nfrtHome);
         FileUtils.ensure(nfrtWork);
 
@@ -217,11 +257,22 @@ public final class NeoForgeRepo extends Repo {
             "--disable-cache"
         ));
 
-        // gameJar = patched Minecraft (no NeoForge classes); gameSources = matching sources.
-        args.add("--write-result");
-        args.add("gameJar:" + compiledJar.getAbsolutePath());
-        args.add("--write-result");
-        args.add("gameSources:" + sourcesJar.getAbsolutePath());
+        if (combined) {
+            // FML 4.x: one jar with patched Minecraft + NeoForge classes + FML markers, plus a separate
+            // Minecraft resources (client-extra) jar. gameSources matches the combined classes.
+            args.add("--write-result");
+            args.add("gameJarWithNeoForge:" + compiledJar.getAbsolutePath());
+            args.add("--write-result");
+            args.add("gameSourcesWithNeoForge:" + sourcesJar.getAbsolutePath());
+            args.add("--write-result");
+            args.add("clientResources:" + resourcesJar.getAbsolutePath());
+        } else {
+            // FML 11: vanilla gameJar (patched Minecraft, no NeoForge classes); gameSources = matching sources.
+            args.add("--write-result");
+            args.add("gameJar:" + compiledJar.getAbsolutePath());
+            args.add("--write-result");
+            args.add("gameSources:" + sourcesJar.getAbsolutePath());
+        }
 
         if (parchmentData != null) {
             args.add("--parchment-data");
@@ -244,14 +295,16 @@ public final class NeoForgeRepo extends Repo {
             throw new IllegalStateException("NFRT did not produce compiled JAR: " + compiledJar.getAbsolutePath());
         if (!sourcesJar.exists())
             throw new IllegalStateException("NFRT did not produce sources JAR: " + sourcesJar.getAbsolutePath());
+        if (combined && !resourcesJar.exists())
+            throw new IllegalStateException("NFRT did not produce client resources JAR: " + resourcesJar.getAbsolutePath());
 
         LOGGER.info("NFRT completed successfully");
     }
 
-    private Task pomTask(File build, Artifact artifact, NeoForgeInfo info) {
+    private Task pomTask(File build, Artifact artifact, NeoForgeInfo info, boolean combined) {
         return Task.named("pom[" + artifact + ']', () -> {
             var output = new File(build, "neoforge.pom");
-            var cacheKey = Util.cache(output).add("info", info.toString());
+            var cacheKey = Util.cache(output).add("info", info.toString()).add("layout", combined ? "combined" : "separate");
 
             if (Mavenizer.checkCache(output, cacheKey))
                 return output;
@@ -261,12 +314,14 @@ public final class NeoForgeRepo extends Repo {
 
             builder.dependencies(deps -> {
                 var seen = new java.util.HashSet<String>();
-                // The NeoForge `universal` jar supplies the NeoForge classes + FML markers as a
-                // SEPARATE jar from the patched-Minecraft main artifact. FancyModLoader's dev-mode
-                // GameLocator requires Minecraft and NeoForge to come from distinct jars.
-                var universal = Artifact.from(artifact.getGroup() + ':' + artifact.getName() + ':' + artifact.getVersion() + ":universal");
-                deps.add(universal);
-                seen.add(universal.getGroup() + ':' + universal.getName());
+                // The secondary game root is a self-referential classified dependency that resolves against
+                // our own repo. FML 11 (separate): the `universal` jar with NeoForge classes. FML 4.x
+                // (combined): the `client-extra` jar with Minecraft resources (the combined classes are
+                // already in the main artifact).
+                var secondaryClassifier = combined ? "client-extra" : "universal";
+                var secondary = Artifact.from(artifact.getGroup() + ':' + artifact.getName() + ':' + artifact.getVersion() + ':' + secondaryClassifier);
+                deps.add(secondary);
+                seen.add(secondary.getGroup() + ':' + secondary.getName());
 
                 // MC libraries (non-OS only for POM)
                 var mcTasks = mcpconfig.getMCTasks(info.mcVersion());
@@ -373,16 +428,17 @@ public final class NeoForgeRepo extends Repo {
         }
     }
 
-    private List<Artifact> collectDependencies(NeoForgeInfo info, Artifact neoforge) {
+    private List<Artifact> collectDependencies(NeoForgeInfo info, Artifact neoforge, boolean combined) {
         var deps = new ArrayList<Artifact>();
         var seen = new java.util.HashSet<String>();
 
-        // NeoForge `universal` jar — supplies NeoForge classes as a jar separate from the patched
-        // Minecraft main artifact (required by FancyModLoader's dev-mode GameLocator). Must be a
-        // Gradle Module variant dependency (not just a POM dep) so it survives module-metadata resolution.
-        var universal = Artifact.from(neoforge.getGroup() + ':' + neoforge.getName() + ':' + neoforge.getVersion() + ":universal");
-        deps.add(universal);
-        seen.add(universal.getGroup() + ':' + universal.getName());
+        // Secondary game root as a Gradle Module variant dependency (not just a POM dep) so it survives
+        // module-metadata resolution. FML 11 (separate): `universal` (NeoForge classes). FML 4.x (combined):
+        // `client-extra` (Minecraft resources; the NeoForge classes are already in the main artifact).
+        var secondaryClassifier = combined ? "client-extra" : "universal";
+        var secondary = Artifact.from(neoforge.getGroup() + ':' + neoforge.getName() + ':' + neoforge.getVersion() + ':' + secondaryClassifier);
+        deps.add(secondary);
+        seen.add(secondary.getGroup() + ':' + secondary.getName() + ':' + secondary.getClassifier());
 
         // MC libraries (including OS-specific natives for variants). The dedup key MUST include the
         // classifier: each LWJGL module appears both as a base jar (e.g. org.lwjgl:lwjgl-glfw) AND as
@@ -470,6 +526,9 @@ public final class NeoForgeRepo extends Repo {
         public String sources;
         public String universal;
         public List<String> libraries;
+        /// JVM module-path entries for BootstrapLauncher (the {@code -p {modules}} run argument). Present on
+        /// FML versions that boot via the module path (e.g. MC 1.21.1 / FML 4.x); absent on newer configs.
+        public List<String> modules;
         public Map<String, ModDevRun> runs;
     }
 

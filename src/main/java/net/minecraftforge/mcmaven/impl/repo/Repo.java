@@ -52,6 +52,43 @@ public abstract class Repo {
         return cache;
     }
 
+    /// Registers no-op {@code mappings.srg.file}/{@code mappings.obf.file} entries in the output JSON.
+    ///
+    /// ForgeGradle's SlimeLauncher integration unconditionally reads these two keys for obfuscated Minecraft
+    /// ({@code MavenizerInstanceImpl#get} throws {@link IllegalStateException} if a key is absent). They only
+    /// feed FML's deobfuscating classloader through {@code GradleStart.srg.*} system properties. Loaders that
+    /// run the game without a runtime SRG remap — Fabric (Knot) and NeoForge (FancyModLoader, which runs in
+    /// Mojmap) — still need the keys present and pointing at loadable files. This writes a single gzip-compressed
+    /// empty-but-valid tsrg2 mapping (no class bodies = identity) and points both keys at it, making the
+    /// launcher's SRG setup a no-op.
+    protected void emitNoopSrgMappings(File build, String mcVersion, Map<String, Supplier<String>> outputJson) {
+        if (outputJson == null)
+            return;
+        var noop = noopMappingsTask(build, mcVersion);
+        outputJson.put("mappings.srg.file", () -> noop.execute().getAbsolutePath());
+        outputJson.put("mappings.obf.file", () -> noop.execute().getAbsolutePath());
+    }
+
+    private Task noopMappingsTask(File build, String mcVersion) {
+        return Task.named("noop-mappings[" + mcVersion + ']', () -> {
+            var output = new File(build, "noop-mappings.tsrg.gz");
+            var cache = Util.cache(output).add("mc", mcVersion);
+            if (Mavenizer.checkCache(output, cache))
+                return output;
+
+            FileUtils.ensureParent(output);
+            // tsrg2 header declaring two namespaces with no class entries => an identity/no-op mapping.
+            try (var os = new java.util.zip.GZIPOutputStream(new FileOutputStream(output))) {
+                os.write("tsrg2 left right\n".getBytes(StandardCharsets.UTF_8));
+            } catch (IOException e) {
+                return Util.sneak(e);
+            }
+
+            cache.save();
+            return output;
+        });
+    }
+
     public abstract List<PendingArtifact> process(Artifact artifact, Mappings mappings, Map<String, Supplier<String>> outputJson);
 
     protected static PendingArtifact pending(String message, Task task, Artifact artifact, boolean auxiliary) {

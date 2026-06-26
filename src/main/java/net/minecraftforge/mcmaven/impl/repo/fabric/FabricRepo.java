@@ -86,17 +86,22 @@ public final class FabricRepo extends Repo {
         var mcVersion = fv.mcVersion();
         var loaderVersion = fv.loaderVersion();
 
-        LOGGER.info("Processing Fabric: MC " + mcVersion + " + loader " + loaderVersion);
-
-        if (MCPConfigRepo.isObfuscated(mcVersion))
-            throw new UnsupportedOperationException(
-                "Fabric support currently requires an unobfuscated Minecraft (>= 26.1); " + mcVersion +
-                " is obfuscated and would need intermediary remapping (not yet implemented).");
+        // Obfuscated Minecraft (<= 1.21.11) ships scrambled names; Fabric distributes 'intermediary'
+        // mappings (official -> intermediary) for those versions and runs the game in the intermediary
+        // namespace. From 26.1+ Minecraft is unobfuscated, intermediary is empty/absent, and the game runs
+        // in the 'official' namespace. We pick the namespace (and whether to run tiny-remapper) accordingly.
+        var obfuscated = MCPConfigRepo.isObfuscated(mcVersion);
+        var namespace = obfuscated ? "intermediary" : "official";
+        LOGGER.info("Processing Fabric: MC " + mcVersion + " + loader " + loaderVersion
+            + " (" + namespace + " namespace)");
 
         var build = new File(cache.root(), "fabric/" + version);
         FileUtils.ensure(build);
 
-        // Fabric runs in the 'official' (Mojang) namespace on unobfuscated MC.
+        // The mappings channel/version we advertise to ForgeGradle (a Gradle-module attribute identifier,
+        // distinct from the loader namespace above). 'intermediary' is not a registered Mappings channel and
+        // mods compile against the delivered jar directly (no Yarn/named layer yet), so we keep the base
+        // 'official' channel for both namespaces.
         var mappings = baseMappings != null ? baseMappings.withMCVersion(mcVersion) : Mappings.of("official", mcVersion);
 
         var mcTasks = mcpconfig.getMCTasks(mcVersion);
@@ -104,8 +109,10 @@ public final class FabricRepo extends Repo {
         // Parse the loader's installer descriptor (runtime libraries + Knot main classes).
         var loaderInfo = getLoaderInfo(loaderVersion);
 
-        // Merge client + server into a single game jar (the main artifact).
+        // Merge client + server into a single game jar.
         var mergeTask = mergeTask(build, mcTasks, mcVersion);
+        // On obfuscated versions, remap the merged jar official -> intermediary. This is the main artifact.
+        var gameTask = obfuscated ? remapTask(build, mcTasks, mcVersion, mergeTask) : mergeTask;
 
         // Output JSON for ForgeGradle
         if (outputJson != null) {
@@ -113,6 +120,11 @@ public final class FabricRepo extends Repo {
             outputJson.put("mcp.version", () -> mcVersion);
             outputJson.put("mappings.channel", mappings::channel);
             outputJson.put("mappings.version", () -> mappings.version() != null ? mappings.version() : mcVersion);
+
+            // Obfuscated Minecraft requires mappings.srg.file/obf.file (Knot ignores them, but ForgeGradle
+            // demands they exist). Emit shared no-op identity mappings.
+            if (obfuscated)
+                emitNoopSrgMappings(build, mcVersion, outputJson);
         }
 
         var name = Artifact.from(Constants.FABRIC_GROUP, Constants.FABRIC_NAME, version);
@@ -124,13 +136,13 @@ public final class FabricRepo extends Repo {
 
         // Metadata zip (version.json + runs.json for SlimeLauncher)
         var metadata = pending("Metadata",
-            metadataTask(build, mcTasks, mcVersion, loaderVersion, loaderInfo),
+            metadataTask(build, mcTasks, mcVersion, loaderVersion, loaderInfo, namespace),
             name.withClassifier("metadata").withExtension("zip"), false, metadataVariant());
 
-        // Merged game jar (main artifact) with class variants
+        // Game jar (main artifact) with class variants
         var javaVersion = mcTasks.getJavaVersion();
         var deps = collectDependencies(mcTasks, loaderVersion, loaderInfo);
-        var classes = pending("Classes", mergeTask, name, false,
+        var classes = pending("Classes", gameTask, name, false,
             () -> classVariants(mappings, javaVersion, deps, List.of()));
 
         var ret = new ArrayList<PendingArtifact>();
@@ -188,6 +200,76 @@ public final class FabricRepo extends Repo {
                     throw new IllegalStateException("mergetool failed (exit " + result.exitCode + "), see log: " + log.getAbsolutePath());
                 if (!output.exists())
                     throw new IllegalStateException("mergetool did not produce: " + output.getAbsolutePath());
+
+                cacheKey.save();
+                return output;
+            });
+    }
+
+    // --- Remap (obfuscated only) ---
+
+    /// Remaps the merged jar from the {@code official} namespace to {@code intermediary} using Fabric's
+    /// tiny-remapper and the per-version {@code net.fabricmc:intermediary} tiny mappings. The Minecraft
+    /// libraries are supplied as the remap classpath so tiny-remapper can resolve inheritance.
+    private Task remapTask(File build, MinecraftTasks mcTasks, String mcVersion, Task mergeTask) {
+        return Task.named("fabric-remap[" + mcVersion + ']',
+            Task.deps(mergeTask),
+            () -> {
+                var output = new File(build, "minecraft-intermediary.jar");
+                var merged = mergeTask.execute();
+                var tool = fabricMaven.download(Constants.TINY_REMAPPER);
+
+                // intermediary tiny mappings: net.fabricmc:intermediary:<mc> (jar with mappings/mappings.tiny)
+                var intermediaryJar = fabricMaven.download(Artifact.from(Constants.FABRIC_INTERMEDIARY + ':' + mcVersion));
+                var mappingsFile = new File(build, "intermediary.tiny");
+
+                var libs = mcTasks.getClientLibraries();
+
+                var cacheKey = Util.cache(output)
+                    .add("tool", tool)
+                    .add("merged", merged)
+                    .add("intermediary", intermediaryJar);
+
+                if (Mavenizer.checkCache(output, cacheKey))
+                    return output;
+
+                // Extract mappings/mappings.tiny from the intermediary jar.
+                try (var jar = new java.util.jar.JarFile(intermediaryJar)) {
+                    var entry = jar.getEntry("mappings/mappings.tiny");
+                    if (entry == null)
+                        throw new IllegalStateException("intermediary " + mcVersion + " is missing mappings/mappings.tiny");
+                    FileUtils.ensureParent(mappingsFile);
+                    try (var in = jar.getInputStream(entry)) {
+                        Files.copy(in, mappingsFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } catch (java.io.IOException e) {
+                    return Util.sneak(e);
+                }
+
+                File jdk;
+                try {
+                    jdk = this.cache.jdks().get(Constants.TINY_REMAPPER_JAVA_VERSION);
+                } catch (Exception e) {
+                    throw new IllegalStateException("Failed to find JDK for tiny-remapper", e);
+                }
+
+                // tiny-remapper fat CLI: <input> <output> <mappings> <from> <to> [<classpath>]...
+                var args = new ArrayList<String>(List.of(
+                    merged.getAbsolutePath(),
+                    output.getAbsolutePath(),
+                    mappingsFile.getAbsolutePath(),
+                    "official",
+                    "intermediary"
+                ));
+                for (var lib : libs)
+                    args.add(lib.file().getAbsolutePath());
+
+                var log = new File(build, "remap.log");
+                var result = ProcessUtils.runJar(jdk, build, log, tool, List.of(), args);
+                if (result.exitCode != 0)
+                    throw new IllegalStateException("tiny-remapper failed (exit " + result.exitCode + "), see log: " + log.getAbsolutePath());
+                if (!output.exists())
+                    throw new IllegalStateException("tiny-remapper did not produce: " + output.getAbsolutePath());
 
                 cacheKey.save();
                 return output;
@@ -296,12 +378,13 @@ public final class FabricRepo extends Repo {
     // --- Metadata / runs.json ---
 
     private Task metadataTask(File build, MinecraftTasks mcTasks, String mcVersion,
-            String loaderVersion, LoaderInfo loaderInfo) {
+            String loaderVersion, LoaderInfo loaderInfo, String namespace) {
         return Task.named("metadata[fabric]", () -> {
             var output = new File(build, "metadata.zip");
             var cacheKey = Util.cache(output)
                 .add("mc", mcVersion)
-                .add("loader", loaderVersion);
+                .add("loader", loaderVersion)
+                .add("namespace", namespace);
 
             if (Mavenizer.checkCache(output, cacheKey))
                 return output;
@@ -320,7 +403,7 @@ public final class FabricRepo extends Repo {
                 new File(minecraftDir, "version.json").toPath(),
                 StandardCopyOption.REPLACE_EXISTING);
 
-            var runsJson = generateRunsJson(loaderInfo);
+            var runsJson = generateRunsJson(loaderInfo, namespace);
             try (var w = new FileWriter(new File(launcherDir, "runs.json"))) {
                 w.write(runsJson);
             }
@@ -331,14 +414,14 @@ public final class FabricRepo extends Repo {
         });
     }
 
-    private String generateRunsJson(LoaderInfo loaderInfo) {
+    private String generateRunsJson(LoaderInfo loaderInfo, String namespace) {
         var runs = new LinkedHashMap<String, RunConfig>();
-        runs.put("client", knotRun("client", loaderInfo.clientMain(), true));
-        runs.put("server", knotRun("server", loaderInfo.serverMain(), false));
+        runs.put("client", knotRun("client", loaderInfo.clientMain(), true, namespace));
+        runs.put("server", knotRun("server", loaderInfo.serverMain(), false, namespace));
         return JsonData.toJson(runs);
     }
 
-    private RunConfig knotRun(String name, String main, boolean client) {
+    private RunConfig knotRun(String name, String main, boolean client, String namespace) {
         var rc = new RunConfig();
         rc.name = name;
         rc.main = main;
@@ -349,6 +432,13 @@ public final class FabricRepo extends Repo {
         props.put("fabric.development", "true");
         // Avoid the Log4j JNDI lookup CVE in old transitive log4j (matches Loom's default).
         props.put("log4j2.formatMsgNoLookups", "true");
+        // Pin BOTH the game-jar namespace and the runtime namespace to the namespace our jar is delivered in.
+        // The loader only skips its runtime game-remap when game namespace == runtime namespace
+        // (GameProviderHelper#deobfuscate). On unobfuscated MC both already default to 'official'; on
+        // obfuscated MC the runtime namespace would otherwise default to 'named' (dev) and the loader would
+        // try (and fail) to remap intermediary -> named without Yarn. Forcing both to our namespace is a no-op.
+        props.put("fabric.gameMappingNamespace", namespace);
+        props.put("fabric.runtimeMappingNamespace", namespace);
         // Mod source roots for the in-dev classpath-group discovery. Fabric's format differs from FML:
         // no '<modid>%%' prefix, single-entry groups are dropped (so don't pad), and groups are separated
         // by a DOUBLED path separator. These args are resolved by ForgeGradle's token engine.
