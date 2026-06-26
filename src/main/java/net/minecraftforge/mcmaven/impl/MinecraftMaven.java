@@ -10,6 +10,7 @@ import net.minecraftforge.mcmaven.impl.mappings.Mappings;
 import net.minecraftforge.mcmaven.impl.repo.Repo;
 import net.minecraftforge.mcmaven.impl.repo.Repo.PendingArtifact;
 import net.minecraftforge.mcmaven.impl.repo.forge.ForgeRepo;
+import net.minecraftforge.mcmaven.impl.repo.neoforge.NeoForgeRepo;
 import net.minecraftforge.mcmaven.impl.repo.mcpconfig.MCP;
 import net.minecraftforge.mcmaven.impl.repo.mcpconfig.MCPConfigRepo;
 import net.minecraftforge.mcmaven.impl.repo.mcpconfig.MCPLegacy;
@@ -117,6 +118,9 @@ public record MinecraftMaven(
         if (Constants.FORGE_GROUP.equals(artifact.getGroup()) && Constants.FORGE_NAME.equals(artifact.getName())) {
             var repo = new ForgeRepo(this.cache, mcprepo);
             createForge(artifact, mcprepo, repo, outputJson);
+        } else if (Constants.NEOFORGE_GROUP.equals(artifact.getGroup()) && Constants.NEOFORGE_NAME.equals(artifact.getName())) {
+            var repo = new NeoForgeRepo(this.cache, mcprepo);
+            createNeoForge(artifact, mcprepo, repo, outputJson);
         } else if (Constants.MC_GROUP.equals(artifact.getGroup())) {
             createMinecraft(artifact, mcprepo, outputJson);
         } else {
@@ -240,6 +244,26 @@ public record MinecraftMaven(
             var artifacts = repo.process(artifact, mappings, outputJson);
             finalize(artifact, mappings, artifacts, mappings.equals(primary));
         }
+    }
+
+    protected void createNeoForge(Artifact artifact, MCPConfigRepo mcprepo, NeoForgeRepo repo, Map<String, Supplier<String>> outputJson) {
+        if (dependenciesOnly)
+            throw new IllegalArgumentException("NeoForgeRepo doesn't currently support dependenciesOnly");
+
+        var version = artifact.getVersion();
+        if (version == null)
+            throw new IllegalArgumentException("No version specified for NeoForge");
+
+        // Get MC version from the NeoForge POM
+        var info = repo.getInfo(artifact);
+        var mcVersion = info.mcVersion();
+
+        // NeoForge defaults to official (Mojmap) mappings
+        var primary = Mappings.of("official", mcVersion);
+        var mappings = this.mappings != null ? this.mappings.withMCVersion(mcVersion) : primary;
+
+        var artifacts = repo.process(artifact, mappings, outputJson);
+        finalize(artifact, mappings, artifacts, mappings.equals(primary));
     }
 
     protected void createMinecraft(Artifact artifact, MCPConfigRepo mcprepo, Map<String, Supplier<String>> outputJson) {

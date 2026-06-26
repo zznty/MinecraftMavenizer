@@ -35,6 +35,16 @@ public final class Constants {
     public static final String FMLONLY_NAME = "fmlonly";
     public static final String FMLONLY_ARTIFACT = FORGE_GROUP + ':' + FMLONLY_NAME;
 
+    // NeoForge
+    public static final String NEOFORGE_MAVEN = "https://maven.neoforged.net/releases/";
+    public static final String NEOFORGE_GROUP = "net.neoforged";
+    public static final String NEOFORGE_NAME = "neoforge";
+    public static final String NEOFORGE_ARTIFACT = NEOFORGE_GROUP + ':' + NEOFORGE_NAME;
+
+    // NeoFormRuntime (NFRT) — used to produce NeoForge artifacts
+    public static final Artifact NFRT = Artifact.from("net.neoforged:neoform-runtime:2.0.19:all");
+    public static final int NFRT_JAVA_VERSION = 25;
+
     // TODO [MCMavenizer][Options] Change cache timeout timer
     public static final int CACHE_TIMEOUT = 1000 * 60 * 60 * 1; // 1 hour
     //public static final String LAUNCHER_MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest.json";
