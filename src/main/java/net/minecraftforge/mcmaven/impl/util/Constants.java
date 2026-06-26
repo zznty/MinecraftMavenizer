@@ -45,6 +45,24 @@ public final class Constants {
     public static final Artifact NFRT = Artifact.from("net.neoforged:neoform-runtime:2.0.19:all");
     public static final int NFRT_JAVA_VERSION = 25;
 
+    // Fabric
+    // Users declare a synthetic 'net.fabricmc:fabric:<mcVersion>-<loaderVersion>' dependency (mirrors how
+    // 'net.minecraftforge:forge:<mc>-<forge>' encodes both versions in one coordinate).
+    public static final String FABRIC_MAVEN = "https://maven.fabricmc.net/";
+    public static final String FABRIC_GROUP = "net.fabricmc";
+    public static final String FABRIC_NAME = "fabric";
+    public static final String FABRIC_ARTIFACT = FABRIC_GROUP + ':' + FABRIC_NAME;
+    public static final String FABRIC_LOADER = FABRIC_GROUP + ":fabric-loader";
+
+    // --- Obfuscated-era (<= 1.21.11) only ---
+    // Intermediary (official -> intermediary tiny mappings), one per MC version: net.fabricmc:intermediary:<mc>.
+    // For 26.1+ Minecraft is unobfuscated and Fabric no longer ships intermediary; the merged vanilla jar is used
+    // as-is in the 'official' namespace (matching the new net.fabricmc.fabric-loom plugin which does not remap).
+    public static final String FABRIC_INTERMEDIARY = FABRIC_GROUP + ":intermediary";
+    // tiny-remapper fat CLI — used to remap the merged Minecraft jar to intermediary on obfuscated versions
+    public static final Artifact TINY_REMAPPER = Artifact.from("net.fabricmc:tiny-remapper:0.14.0:fat");
+    public static final int TINY_REMAPPER_JAVA_VERSION = 8;
+
     // TODO [MCMavenizer][Options] Change cache timeout timer
     public static final int CACHE_TIMEOUT = 1000 * 60 * 60 * 1; // 1 hour
     //public static final String LAUNCHER_MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest.json";

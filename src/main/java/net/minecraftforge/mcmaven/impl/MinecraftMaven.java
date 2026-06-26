@@ -9,6 +9,7 @@ import net.minecraftforge.mcmaven.impl.data.GradleModule;
 import net.minecraftforge.mcmaven.impl.mappings.Mappings;
 import net.minecraftforge.mcmaven.impl.repo.Repo;
 import net.minecraftforge.mcmaven.impl.repo.Repo.PendingArtifact;
+import net.minecraftforge.mcmaven.impl.repo.fabric.FabricRepo;
 import net.minecraftforge.mcmaven.impl.repo.forge.ForgeRepo;
 import net.minecraftforge.mcmaven.impl.repo.neoforge.NeoForgeRepo;
 import net.minecraftforge.mcmaven.impl.repo.mcpconfig.MCP;
@@ -121,6 +122,9 @@ public record MinecraftMaven(
         } else if (Constants.NEOFORGE_GROUP.equals(artifact.getGroup()) && Constants.NEOFORGE_NAME.equals(artifact.getName())) {
             var repo = new NeoForgeRepo(this.cache, mcprepo);
             createNeoForge(artifact, mcprepo, repo, outputJson);
+        } else if (Constants.FABRIC_GROUP.equals(artifact.getGroup()) && Constants.FABRIC_NAME.equals(artifact.getName())) {
+            var repo = new FabricRepo(this.cache, mcprepo);
+            createFabric(artifact, mcprepo, repo, outputJson);
         } else if (Constants.MC_GROUP.equals(artifact.getGroup())) {
             createMinecraft(artifact, mcprepo, outputJson);
         } else {
@@ -259,6 +263,25 @@ public record MinecraftMaven(
         var mcVersion = info.mcVersion();
 
         // NeoForge defaults to official (Mojmap) mappings
+        var primary = Mappings.of("official", mcVersion);
+        var mappings = this.mappings != null ? this.mappings.withMCVersion(mcVersion) : primary;
+
+        var artifacts = repo.process(artifact, mappings, outputJson);
+        finalize(artifact, mappings, artifacts, mappings.equals(primary));
+    }
+
+    protected void createFabric(Artifact artifact, MCPConfigRepo mcprepo, FabricRepo repo, Map<String, Supplier<String>> outputJson) {
+        if (dependenciesOnly)
+            throw new IllegalArgumentException("FabricRepo doesn't currently support dependenciesOnly");
+
+        var version = artifact.getVersion();
+        if (version == null)
+            throw new IllegalArgumentException("No version specified for Fabric");
+
+        // MC version is the first half of the synthetic '<mc>-<loader>' coordinate.
+        var mcVersion = FabricRepo.parseVersion(version).mcVersion();
+
+        // Fabric runs in the official (Mojmap) namespace on unobfuscated Minecraft.
         var primary = Mappings.of("official", mcVersion);
         var mappings = this.mappings != null ? this.mappings.withMCVersion(mcVersion) : primary;
 
