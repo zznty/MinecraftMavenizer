@@ -140,10 +140,25 @@ public final class FabricRepo extends Repo {
             outputJson.put("mappings.channel", mappings::channel);
             outputJson.put("mappings.version", () -> mappings.version() != null ? mappings.version() : mcVersion);
 
-            // Obfuscated Minecraft requires mappings.srg.file/obf.file (Knot ignores them, but ForgeGradle
-            // demands they exist). Emit shared no-op identity mappings.
-            if (obfuscated)
-                emitNoopSrgMappings(build, mcVersion, outputJson);
+            // Obfuscated Minecraft requires mappings.srg.file/obf.file. ForgeGradle's SlimeLauncher demands
+            // both exist for the dev runtime; Knot ignores them (it runs the jar in whatever namespace we
+            // deliver). So mappings.srg.file is always a harmless no-op identity.
+            //
+            // mappings.obf.file is the "dev names -> shipping namespace" slot. For the Mojmap multiloader
+            // flavour we publish the REAL Mojmap -> intermediary mapping there, so a build can produce a
+            // shippable (non-dev) Fabric jar by running the Renamer plugin over it via
+            // `minecraft.dependency.toObfFile` — exactly how the Forge example uses toSrgFile for Mojmap ->
+            // SRG. (Dev is unaffected: SlimeLauncher only writes some SRG side-files Knot never reads.)
+            if (obfuscated) {
+                var noop = noopMappingsTask(build, mcVersion);
+                outputJson.put("mappings.srg.file", () -> noop.execute().getAbsolutePath());
+                if (mojmap) {
+                    var moj2int = mojToIntermediaryMappingTask(build, mcTasks, mcVersion);
+                    outputJson.put("mappings.obf.file", () -> moj2int.execute().getAbsolutePath());
+                } else {
+                    outputJson.put("mappings.obf.file", () -> noop.execute().getAbsolutePath());
+                }
+            }
         }
 
         var name = Artifact.from(Constants.FABRIC_GROUP, Constants.FABRIC_NAME, version);
@@ -333,6 +348,57 @@ public final class FabricRepo extends Repo {
                     // tiny-remapper reads the namespace names from its CLI args (we pass 'official' and 'named'),
                     // so the tiny file's own namespace labels are not significant here.
                     notch2moj.write(output.toPath(), net.minecraftforge.srgutils.IMappingFile.Format.TINY, false);
+                } catch (java.io.IOException e) {
+                    return Util.sneak(e);
+                }
+
+                cacheKey.save();
+                return output;
+            });
+    }
+
+    /// Builds a {@code Mojmap -> intermediary} mapping (TSRG2) for producing a shippable (non-dev) Fabric jar
+    /// from a Mojmap-developed multiloader mod. Composed from the two halves the toolchain already has:
+    /// {@code notch -> moj} (reverse of Minecraft's ProGuard mappings) chained with {@code notch ->
+    /// intermediary} (Fabric's per-version intermediary mappings):
+    /// {@code (notch->moj).reverse() = moj->notch, then .chain(notch->intermediary) = moj->intermediary}.
+    /// Published via {@code mappings.obf.file} so the Renamer plugin can reobf the built jar.
+    private Task mojToIntermediaryMappingTask(File build, MinecraftTasks mcTasks, String mcVersion) {
+        return Task.named("fabric-moj2int[" + mcVersion + ']',
+            Task.deps(mcTasks.versionFile(MCFile.CLIENT_MAPPINGS), mcTasks.versionFile(MCFile.SERVER_MAPPINGS)),
+            () -> {
+                var output = new File(build, "moj2intermediary.tsrg.gz");
+                var client = mcTasks.versionFile(MCFile.CLIENT_MAPPINGS).execute();
+                var server = mcTasks.versionFile(MCFile.SERVER_MAPPINGS).execute();
+                var intermediaryJar = fabricMaven.download(Artifact.from(Constants.FABRIC_INTERMEDIARY + ':' + mcVersion));
+
+                var cacheKey = Util.cache(output)
+                    .add("client", client)
+                    .add("server", server)
+                    .add("intermediary", intermediaryJar);
+                if (Mavenizer.checkCache(output, cacheKey))
+                    return output;
+
+                try {
+                    // notch -> moj (reverse the moj -> notch ProGuard mappings, merge client + server)
+                    var notch2moj = net.minecraftforge.srgutils.IMappingFile.load(client).reverse()
+                        .merge(net.minecraftforge.srgutils.IMappingFile.load(server).reverse());
+
+                    // notch -> intermediary (from Fabric's intermediary jar)
+                    net.minecraftforge.srgutils.IMappingFile notch2int;
+                    try (var jar = new java.util.jar.JarFile(intermediaryJar)) {
+                        var entry = jar.getEntry("mappings/mappings.tiny");
+                        if (entry == null)
+                            throw new IllegalStateException("intermediary " + mcVersion + " is missing mappings/mappings.tiny");
+                        try (var in = jar.getInputStream(entry)) {
+                            notch2int = net.minecraftforge.srgutils.IMappingFile.load(in);
+                        }
+                    }
+
+                    // moj -> intermediary = (notch -> moj).reverse().chain(notch -> intermediary)
+                    var moj2int = notch2moj.reverse().chain(notch2int);
+                    FileUtils.ensureParent(output);
+                    moj2int.write(output.toPath(), net.minecraftforge.srgutils.IMappingFile.Format.TSRG2, false);
                 } catch (java.io.IOException e) {
                     return Util.sneak(e);
                 }

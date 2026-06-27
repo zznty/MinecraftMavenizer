@@ -69,7 +69,7 @@ public abstract class Repo {
         outputJson.put("mappings.obf.file", () -> noop.execute().getAbsolutePath());
     }
 
-    private Task noopMappingsTask(File build, String mcVersion) {
+    protected Task noopMappingsTask(File build, String mcVersion) {
         return Task.named("noop-mappings[" + mcVersion + ']', () -> {
             var output = new File(build, "noop-mappings.tsrg.gz");
             var cache = Util.cache(output).add("mc", mcVersion);
