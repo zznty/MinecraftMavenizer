@@ -16,7 +16,9 @@ plugins {
 
 gradleutils.displayName = 'Minecraft Mavenizer'
 description = 'A pure-blooded Java tool to generate a maven repository for Minecraft artifacts.'
-group = 'net.minecraftforge'
+// Published under net.zznty (instead of upstream net.minecraftforge) to avoid coordinate ambiguity with the
+// original Forge artifacts. Java packages are kept as-is to stay mergeable with upstream.
+group = 'net.zznty'
 version = gitversion.tagOffset
 
 println "Version: $version"
@@ -84,14 +86,23 @@ changelog {
 
 publishing {
     repositories {
-        maven gradleutils.publishingForgeMaven
+        // Our Reposilite maven (maven.zznty.ru). Snapshots vs releases is picked from the version.
+        maven {
+            name = 'zznty'
+            url = version.toString().endsWith('-SNAPSHOT')
+                ? 'https://maven.zznty.ru/snapshots'
+                : 'https://maven.zznty.ru/releases'
+            credentials {
+                username = providers.environmentVariable('MAVEN_USER').orElse('').get()
+                password = providers.environmentVariable('MAVEN_PASSWORD').orElse('').get()
+            }
+        }
     }
 
     publications.register('mavenJava', MavenPublication) {
         from components.shadow
 
         changelog.publish(it)
-        gradleutils.promote(it)
 
         pom { pom ->
             name = gradleutils.displayName
@@ -101,11 +112,6 @@ publishing {
 
             licenses {
                 license gradleutils.pom.licenses.LGPLv2_1
-            }
-
-            developers {
-                developer gradleutils.pom.developers.LexManos
-                developer gradleutils.pom.developers.Jonathing
             }
         }
     }
