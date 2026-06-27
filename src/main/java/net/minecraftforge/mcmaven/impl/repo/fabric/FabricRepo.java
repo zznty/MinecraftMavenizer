@@ -86,22 +86,36 @@ public final class FabricRepo extends Repo {
         var mcVersion = fv.mcVersion();
         var loaderVersion = fv.loaderVersion();
 
-        // Obfuscated Minecraft (<= 1.21.11) ships scrambled names; Fabric distributes 'intermediary'
-        // mappings (official -> intermediary) for those versions and runs the game in the intermediary
-        // namespace. From 26.1+ Minecraft is unobfuscated, intermediary is empty/absent, and the game runs
-        // in the 'official' namespace. We pick the namespace (and whether to run tiny-remapper) accordingly.
+        // Minecraft namespace selection.
+        //
+        // Unobfuscated MC (>= 26.1): the merged jar already has official (Mojang) names; use it as-is in the
+        // 'official' namespace (intermediary is empty/absent for these versions).
+        //
+        // Obfuscated MC (<= 1.21.11): the merged jar has scrambled (notch) names and must be remapped. There
+        // are two flavours, chosen by the requested mappings channel:
+        //   * 'official' (Mojmap) -> remap notch -> 'named' using Mojang's official mappings. Mods compile
+        //     against Mojang names. This is what a shared-code MULTILOADER project needs, because Forge and
+        //     NeoForge also run Mojmap in dev, so the same common sources compile/run on every loader.
+        //   * otherwise -> remap notch -> 'intermediary' using Fabric's intermediary mappings (the classic
+        //     single-loader Fabric layout).
         var obfuscated = MCPConfigRepo.isObfuscated(mcVersion);
-        var namespace = obfuscated ? "intermediary" : "official";
+        var mojmap = "official".equals(baseMappings != null ? baseMappings.channel() : "official");
+        // The loader namespace the game jar is delivered (and run) in.
+        final String namespace;
+        if (!obfuscated)
+            namespace = "official";
+        else if (mojmap)
+            namespace = "named";       // Fabric calls the Mojmap dev namespace 'named'
+        else
+            namespace = "intermediary";
         LOGGER.info("Processing Fabric: MC " + mcVersion + " + loader " + loaderVersion
             + " (" + namespace + " namespace)");
 
-        var build = new File(cache.root(), "fabric/" + version);
+        var build = new File(cache.root(), "fabric/" + version + (obfuscated ? '/' + namespace : ""));
         FileUtils.ensure(build);
 
         // The mappings channel/version we advertise to ForgeGradle (a Gradle-module attribute identifier,
-        // distinct from the loader namespace above). 'intermediary' is not a registered Mappings channel and
-        // mods compile against the delivered jar directly (no Yarn/named layer yet), so we keep the base
-        // 'official' channel for both namespaces.
+        // distinct from the loader namespace above). We keep the base 'official' channel throughout.
         var mappings = baseMappings != null ? baseMappings.withMCVersion(mcVersion) : Mappings.of("official", mcVersion);
 
         var mcTasks = mcpconfig.getMCTasks(mcVersion);
@@ -111,8 +125,13 @@ public final class FabricRepo extends Repo {
 
         // Merge client + server into a single game jar.
         var mergeTask = mergeTask(build, mcTasks, mcVersion);
-        // On obfuscated versions, remap the merged jar official -> intermediary. This is the main artifact.
-        var gameTask = obfuscated ? remapTask(build, mcTasks, mcVersion, mergeTask) : mergeTask;
+        // On obfuscated versions, remap the merged jar from notch to the target namespace. This is the main
+        // artifact. The 4th/5th args are the tiny-remapper source/target namespace NAMES as they appear in the
+        // mapping file: Fabric's intermediary tiny labels them 'official'/'intermediary'; our srgutils-written
+        // Mojmap tiny uses srgutils' default 'left'/'right' labels (left = notch source, right = Mojmap).
+        var gameTask = !obfuscated ? mergeTask
+            : mojmap ? remapTask(build, mcTasks, mcVersion, mergeTask, "named", mojmapMappingTask(build, mcTasks, mcVersion), "left", "right")
+            : remapTask(build, mcTasks, mcVersion, mergeTask, "intermediary", intermediaryMappingTask(build, mcVersion), "official", "intermediary");
 
         // Output JSON for ForgeGradle
         if (outputJson != null) {
@@ -208,43 +227,28 @@ public final class FabricRepo extends Repo {
 
     // --- Remap (obfuscated only) ---
 
-    /// Remaps the merged jar from the {@code official} namespace to {@code intermediary} using Fabric's
-    /// tiny-remapper and the per-version {@code net.fabricmc:intermediary} tiny mappings. The Minecraft
-    /// libraries are supplied as the remap classpath so tiny-remapper can resolve inheritance.
-    private Task remapTask(File build, MinecraftTasks mcTasks, String mcVersion, Task mergeTask) {
-        return Task.named("fabric-remap[" + mcVersion + ']',
-            Task.deps(mergeTask),
+    /// Remaps the merged jar from the notch (official) namespace to {@code targetNs} using tiny-remapper and a
+    /// tiny v2 mapping file (produced by {@code mappingTask}, with source namespace {@code official}). The
+    /// Minecraft libraries are supplied as the remap classpath so tiny-remapper can resolve inheritance.
+    private Task remapTask(File build, MinecraftTasks mcTasks, String mcVersion, Task mergeTask, String targetNs, Task mappingTask, String fromName, String toName) {
+        return Task.named("fabric-remap[" + mcVersion + "][" + targetNs + ']',
+            Task.deps(mergeTask, mappingTask),
             () -> {
-                var output = new File(build, "minecraft-intermediary.jar");
+                var output = new File(build, "minecraft-" + targetNs + ".jar");
                 var merged = mergeTask.execute();
+                var mappingsFile = mappingTask.execute();
                 var tool = fabricMaven.download(Constants.TINY_REMAPPER);
-
-                // intermediary tiny mappings: net.fabricmc:intermediary:<mc> (jar with mappings/mappings.tiny)
-                var intermediaryJar = fabricMaven.download(Artifact.from(Constants.FABRIC_INTERMEDIARY + ':' + mcVersion));
-                var mappingsFile = new File(build, "intermediary.tiny");
 
                 var libs = mcTasks.getClientLibraries();
 
                 var cacheKey = Util.cache(output)
                     .add("tool", tool)
                     .add("merged", merged)
-                    .add("intermediary", intermediaryJar);
+                    .add("mappings", mappingsFile)
+                    .add("targetNs", targetNs);
 
                 if (Mavenizer.checkCache(output, cacheKey))
                     return output;
-
-                // Extract mappings/mappings.tiny from the intermediary jar.
-                try (var jar = new java.util.jar.JarFile(intermediaryJar)) {
-                    var entry = jar.getEntry("mappings/mappings.tiny");
-                    if (entry == null)
-                        throw new IllegalStateException("intermediary " + mcVersion + " is missing mappings/mappings.tiny");
-                    FileUtils.ensureParent(mappingsFile);
-                    try (var in = jar.getInputStream(entry)) {
-                        Files.copy(in, mappingsFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                    }
-                } catch (java.io.IOException e) {
-                    return Util.sneak(e);
-                }
 
                 File jdk;
                 try {
@@ -254,22 +258,84 @@ public final class FabricRepo extends Repo {
                 }
 
                 // tiny-remapper fat CLI: <input> <output> <mappings> <from> <to> [<classpath>]...
+                // <from>/<to> are the namespace NAMES inside the mapping file (not the loader namespace).
                 var args = new ArrayList<String>(List.of(
                     merged.getAbsolutePath(),
                     output.getAbsolutePath(),
                     mappingsFile.getAbsolutePath(),
-                    "official",
-                    "intermediary"
+                    fromName,
+                    toName
                 ));
                 for (var lib : libs)
                     args.add(lib.file().getAbsolutePath());
 
-                var log = new File(build, "remap.log");
+                var log = new File(build, "remap-" + targetNs + ".log");
                 var result = ProcessUtils.runJar(jdk, build, log, tool, List.of(), args);
                 if (result.exitCode != 0)
                     throw new IllegalStateException("tiny-remapper failed (exit " + result.exitCode + "), see log: " + log.getAbsolutePath());
                 if (!output.exists())
                     throw new IllegalStateException("tiny-remapper did not produce: " + output.getAbsolutePath());
+
+                cacheKey.save();
+                return output;
+            });
+    }
+
+    /// Extracts Fabric's per-version intermediary tiny mappings ({@code net.fabricmc:intermediary:<mc>},
+    /// namespaces {@code official intermediary}) for use as the remap mapping file.
+    private Task intermediaryMappingTask(File build, String mcVersion) {
+        return Task.named("fabric-intermediary-tiny[" + mcVersion + ']', () -> {
+            var output = new File(build, "intermediary.tiny");
+            var intermediaryJar = fabricMaven.download(Artifact.from(Constants.FABRIC_INTERMEDIARY + ':' + mcVersion));
+
+            var cacheKey = Util.cache(output).add("intermediary", intermediaryJar);
+            if (Mavenizer.checkCache(output, cacheKey))
+                return output;
+
+            try (var jar = new java.util.jar.JarFile(intermediaryJar)) {
+                var entry = jar.getEntry("mappings/mappings.tiny");
+                if (entry == null)
+                    throw new IllegalStateException("intermediary " + mcVersion + " is missing mappings/mappings.tiny");
+                FileUtils.ensureParent(output);
+                try (var in = jar.getInputStream(entry)) {
+                    Files.copy(in, output.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
+            } catch (java.io.IOException e) {
+                return Util.sneak(e);
+            }
+
+            cacheKey.save();
+            return output;
+        });
+    }
+
+    /// Builds a tiny v2 mapping file ({@code official -> named}) from Minecraft's official (Mojang) client +
+    /// server ProGuard mappings, for the Mojmap multiloader flavour. The ProGuard mappings are moj -> notch,
+    /// so we reverse them; the merged result is the same notch -> moj used by the Forge/NeoForge toolchains.
+    private Task mojmapMappingTask(File build, MinecraftTasks mcTasks, String mcVersion) {
+        return Task.named("fabric-mojmap-tiny[" + mcVersion + ']',
+            Task.deps(mcTasks.versionFile(MCFile.CLIENT_MAPPINGS), mcTasks.versionFile(MCFile.SERVER_MAPPINGS)),
+            () -> {
+                var output = new File(build, "mojmap.tiny");
+                var client = mcTasks.versionFile(MCFile.CLIENT_MAPPINGS).execute();
+                var server = mcTasks.versionFile(MCFile.SERVER_MAPPINGS).execute();
+
+                var cacheKey = Util.cache(output).add("client", client).add("server", server);
+                if (Mavenizer.checkCache(output, cacheKey))
+                    return output;
+
+                try {
+                    // ProGuard files are moj -> notch; reverse to notch -> moj, merge client + server.
+                    var off2obfClient = net.minecraftforge.srgutils.IMappingFile.load(client).reverse();
+                    var off2obfServer = net.minecraftforge.srgutils.IMappingFile.load(server).reverse();
+                    var notch2moj = off2obfClient.merge(off2obfServer);
+                    FileUtils.ensureParent(output);
+                    // tiny-remapper reads the namespace names from its CLI args (we pass 'official' and 'named'),
+                    // so the tiny file's own namespace labels are not significant here.
+                    notch2moj.write(output.toPath(), net.minecraftforge.srgutils.IMappingFile.Format.TINY, false);
+                } catch (java.io.IOException e) {
+                    return Util.sneak(e);
+                }
 
                 cacheKey.save();
                 return output;
