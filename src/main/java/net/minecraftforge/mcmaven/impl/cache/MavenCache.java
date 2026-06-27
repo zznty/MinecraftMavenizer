@@ -244,9 +244,18 @@ public sealed class MavenCache permits MinecraftMavenCache {
                     if (rhash == null)
                         continue;
 
+                    // Maven checksum files are not always a bare hex string: some publishers append a trailing
+                    // newline (or the `<hash>  <filename>` GNU coreutils format). Without normalising, an
+                    // otherwise-identical cached file is treated as outdated and re-downloaded on every run,
+                    // which defeats the up-to-date short-circuit (e.g. for the legacy MCP maven-metadata.xml).
+                    rhash = rhash.strip();
+                    var space = rhash.indexOf(' ');
+                    if (space > 0)
+                        rhash = rhash.substring(0, space);
+
                     try {
                         var chash = func.hash(target);
-                        if (!chash.equals(rhash)) {
+                        if (!chash.equalsIgnoreCase(rhash)) {
                             LOGGER.error("Outdated cached file: " + target.getAbsolutePath());
                             LOGGER.error("Expected: " + rhash);
                             LOGGER.error("Actual:   " + chash);
