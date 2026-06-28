@@ -115,6 +115,10 @@ class MavenTask {
             "An AccessTransformer config to apply to the artifacts have been built. This is a work around for Gradle's broken ArtifactTransformer system. https://github.com/MinecraftForge/ForgeGradle/issues/1023")
             .withRequiredArg().ofType(File.class);
 
+        var accessWidenerO = parser.accepts("access-widener",
+            "An AccessWidener file (.accesswidener v2 named) that is converted to an AccessTransformer for Forge/NeoForge artifacts. Fabric artifacts ignore this flag (Fabric handles AWs natively).")
+            .withRequiredArg().ofType(File.class);
+
         var facadeConfigO = parser.accepts("facade-config",
             "A Facade Config, which allows injecting interfaces to the built artifacts.")
             .withRequiredArg().ofType(File.class);
@@ -202,6 +206,39 @@ class MavenTask {
             foreignRepositories.put(split[0], split[1]);
         }
 
+        var accessTransformers = new ArrayList<>(options.valuesOf(accessTransformerO));
+        var accessWideners = new ArrayList<>(options.valuesOf(accessWidenerO));
+        var artifactForConversion = artifact; // capture for lambda
+
+        // For Forge/NeoForge artifacts, convert .accesswidener files to AT .cfg format because those loaders
+        // only consume Access Transformers (they don't natively support Access Wideners). The conversion uses
+        // the Mojmap->SRG mapping from MCPConfig. Fabric ignores AWs (Fabric handles them natively).
+        if (!accessWideners.isEmpty() && (Constants.FORGE_GROUP.equals(artifactForConversion.getGroup()) || Constants.NEOFORGE_GROUP.equals(artifactForConversion.getGroup()))) {
+            try {
+                var mcVersion = artifactForConversion.getVersion().split("-")[0];
+                var mcprepo = new net.minecraftforge.mcmaven.impl.repo.mcpconfig.MCPConfigRepo(
+                    new Cache(cache, localCache, jdkCache, foreignRepositories), false);
+                var mcp = mcprepo.get(mcVersion);
+                var srgTask = mcp.getSide("server").getTasks().getMappings();
+                if (srgTask != null) {
+                    var srgFile = srgTask.execute();
+                    for (var awFile : accessWideners) {
+                        if (!awFile.exists()) {
+                            LOGGER.warn("Access Widener file does not exist: " + awFile.getAbsolutePath());
+                            continue;
+                        }
+                        var atFile = net.minecraftforge.mcmaven.impl.util.AccessWidenerConverter.convert(awFile, srgFile, localCache);
+                        accessTransformers.add(atFile);
+                        LOGGER.info("Converted AW -> AT: " + awFile.getName() + " -> " + atFile.getName());
+                    }
+                } else {
+                    LOGGER.warn("SRG mapping not available, skipping AW->AT conversion");
+                }
+            } catch (Exception e) {
+                LOGGER.error("Failed to convert access widener files, they will be ignored", e);
+            }
+        }
+
         var mcmaven = new MinecraftMaven(
             output,
             options.has(dependenciesOnlyO),
@@ -211,7 +248,7 @@ class MavenTask {
             options.has(globalAuxiliaryVariantsO),
             options.has(disableGradleO),
             options.has(stubO),
-            new ArrayList<>(options.valuesOf(accessTransformerO)),
+            accessTransformers,
             new ArrayList<>(options.valuesOf(facadeConfigO)),
             options.valueOf(outputJsonO)
         );
