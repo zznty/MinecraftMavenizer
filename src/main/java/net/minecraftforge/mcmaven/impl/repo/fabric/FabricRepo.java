@@ -133,6 +133,20 @@ public final class FabricRepo extends Repo {
             : mojmap ? remapTask(build, mcTasks, mcVersion, mergeTask, "named", mojmapMappingTask(build, mcTasks, mcVersion), "left", "right")
             : remapTask(build, mcTasks, mcVersion, mergeTask, "intermediary", intermediaryMappingTask(build, mcVersion), "official", "intermediary");
 
+        var name = Artifact.from(Constants.FABRIC_GROUP, Constants.FABRIC_NAME, version);
+
+        // For the obfuscated Mojmap flavour, publish the Mojmap -> intermediary mapping as a real, resolvable
+        // artifact (classifier 'moj2intermediary') in addition to its on-disk path. The Renamer plugin's mixin
+        // refmap support resolves mappings.obf.artifact through a detached Gradle configuration (it cannot take
+        // a bare file path), so without a published artifact `renamer.mappings(minecraft.dependency.toObf)`
+        // fails with "Mavenizer did not output expected json data mappings.obf.artifact". This mirrors how
+        // Forge/MCPConfig publishes its map2obf/map2srg mappings (see Repo#mappingArtifacts).
+        PendingArtifact obfMapping = null;
+        if (obfuscated && mojmap)
+            obfMapping = pending("Mappings moj2intermediary",
+                mojToIntermediaryMappingTask(build, mcTasks, mcVersion),
+                name.withClassifier("moj2intermediary").withExtension("tsrg.gz"), false);
+
         // Output JSON for ForgeGradle
         if (outputJson != null) {
             outputJson.put("mc.version", () -> mcVersion);
@@ -144,24 +158,24 @@ public final class FabricRepo extends Repo {
             // both exist for the dev runtime; Knot ignores them (it runs the jar in whatever namespace we
             // deliver). So mappings.srg.file is always a harmless no-op identity.
             //
-            // mappings.obf.file is the "dev names -> shipping namespace" slot. For the Mojmap multiloader
-            // flavour we publish the REAL Mojmap -> intermediary mapping there, so a build can produce a
-            // shippable (non-dev) Fabric jar by running the Renamer plugin over it via
-            // `minecraft.dependency.toObfFile` — exactly how the Forge example uses toSrgFile for Mojmap ->
-            // SRG. (Dev is unaffected: SlimeLauncher only writes some SRG side-files Knot never reads.)
+            // mappings.obf.{artifact,file} is the "dev names -> shipping namespace" slot. For the Mojmap
+            // multiloader flavour we publish the REAL Mojmap -> intermediary mapping there, so a build can
+            // produce a shippable (non-dev) Fabric jar by running the Renamer plugin over it via
+            // `minecraft.dependency.toObfFile` (a file path) or `minecraft.dependency.toObf` (a resolvable
+            // coordinate, needed by the mixin-refmap path) — exactly how the Forge example uses toSrg/toSrgFile
+            // for Mojmap -> SRG. (Dev is unaffected: SlimeLauncher only writes some SRG side-files Knot never
+            // reads.)
             if (obfuscated) {
                 var noop = noopMappingsTask(build, mcVersion);
                 outputJson.put("mappings.srg.file", () -> noop.execute().getAbsolutePath());
                 if (mojmap) {
-                    var moj2int = mojToIntermediaryMappingTask(build, mcTasks, mcVersion);
-                    outputJson.put("mappings.obf.file", () -> moj2int.execute().getAbsolutePath());
+                    outputJson.put("mappings.obf.artifact", obfMapping.artifact()::toString);
+                    outputJson.put("mappings.obf.file", obfMapping.task().filePathSupplier());
                 } else {
                     outputJson.put("mappings.obf.file", () -> noop.execute().getAbsolutePath());
                 }
             }
         }
-
-        var name = Artifact.from(Constants.FABRIC_GROUP, Constants.FABRIC_NAME, version);
 
         // POM
         var pom = pending("Fabric POM",
@@ -183,6 +197,8 @@ public final class FabricRepo extends Repo {
         ret.add(classes);
         ret.add(metadata);
         ret.add(pom);
+        if (obfMapping != null)
+            ret.add(obfMapping);
         return ret;
     }
 
