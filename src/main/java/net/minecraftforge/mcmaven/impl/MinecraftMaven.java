@@ -16,6 +16,7 @@ import net.minecraftforge.mcmaven.impl.repo.mcpconfig.MCP;
 import net.minecraftforge.mcmaven.impl.repo.mcpconfig.MCPConfigRepo;
 import net.minecraftforge.mcmaven.impl.repo.mcpconfig.MCPLegacy;
 import net.minecraftforge.mcmaven.impl.repo.mcpconfig.MinecraftTasks;
+import net.minecraftforge.mcmaven.impl.util.AccessWidenerConverter;
 import net.minecraftforge.mcmaven.impl.util.Artifact;
 import net.minecraftforge.mcmaven.impl.util.ComparableVersion;
 import net.minecraftforge.mcmaven.impl.util.Constants;
@@ -75,6 +76,7 @@ public record MinecraftMaven(
     boolean disableGradle,
     boolean stubJars,
     List<File> accessTransformer,
+    List<File> accessWidener,
     List<File> facadeConfigs,
     @Nullable File outputJsonFile
 ) {
@@ -100,6 +102,8 @@ public record MinecraftMaven(
         LOGGER.info("  Stub Jars:          " + stubJars);
         if (!accessTransformer.isEmpty())
             Util.filter(LOGGER, "  Access Transformer: ", accessTransformer);
+        if (!accessWidener.isEmpty())
+            Util.filter(LOGGER, "  Access Widener:     ", accessWidener);
         if (!facadeConfigs.isEmpty())
             Util.filter(LOGGER, "  Facade Config:      ", facadeConfigs);
         LOGGER.info();
@@ -557,17 +561,48 @@ public record MinecraftMaven(
         var cache = Util.cache(target)
             .add("tool", tool)
             .add(accessTransformer)
+            .add(accessWidener)
             .add("input", input);
 
         if (Mavenizer.checkCache(target, cache))
             return target;
+
+        // Convert any .accesswidener files to AT .cfg files using the now-cached Mojmap->SRG mapping.
+        // This runs AFTER MCPConfig has finished processing, so the SRG file is guaranteed to exist.
+        var allAtFiles = new ArrayList<>(accessTransformer);
+        if (!accessWidener.isEmpty()) {
+            var mcVersion = Util.forgeToMcVersion(artifact.getVersion());
+            var pattern = "official-" + mcVersion + "-srg.tsrg.gz";
+            var srgFiles = new ArrayList<java.io.File>();
+            try (var stream = java.nio.file.Files.walk(this.cache.root().toPath(), 12)) {
+                stream.filter(p -> p.getFileName().toString().equals(pattern))
+                    .forEach(p -> srgFiles.add(p.toFile()));
+            } catch (java.io.IOException ignored) { }
+
+            if (!srgFiles.isEmpty()) {
+                for (var awFile : accessWidener) {
+                    if (!awFile.exists()) {
+                        LOGGER.warn("Access Widener file does not exist: " + awFile.getAbsolutePath());
+                        continue;
+                    }
+                    try {
+                        var atFile = AccessWidenerConverter.convert(awFile, srgFiles.get(0), this.cache.root());
+                        allAtFiles.add(atFile);
+                    } catch (IOException e) {
+                        LOGGER.error("Failed to convert access widener: " + awFile, e);
+                    }
+                }
+            } else {
+                LOGGER.warn("SRG mapping not cached, skipping AW->AT conversion");
+            }
+        }
 
         var args = new ArrayList<>(List.of(
             "--inJar", input.getAbsolutePath(),
             "--outJar", target.getAbsolutePath()
         ));
 
-        for (var file : accessTransformer) {
+        for (var file : allAtFiles) {
             if (!file.exists())
                 throw new IllegalStateException("Access Transformer config does not exist: " + file.getAbsolutePath());
             args.add("--atfile");
