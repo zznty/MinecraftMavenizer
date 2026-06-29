@@ -212,27 +212,34 @@ class MavenTask {
 
         // For Forge/NeoForge artifacts, convert .accesswidener files to AT .cfg format because those loaders
         // only consume Access Transformers (they don't natively support Access Wideners). The conversion uses
-        // the Mojmap->SRG mapping from MCPConfig. Fabric ignores AWs (Fabric handles them natively).
+        // the cached Mojmap->SRG mapping from a previous Mavenizer run (the MCPConfig MappedToSrg output).
+        // Fabric ignores AWs (Fabric Loader handles them natively).
         if (!accessWideners.isEmpty() && (Constants.FORGE_GROUP.equals(artifactForConversion.getGroup()) || Constants.NEOFORGE_GROUP.equals(artifactForConversion.getGroup()))) {
             try {
                 var mcVersion = artifactForConversion.getVersion().split("-")[0];
-                var mcprepo = new net.minecraftforge.mcmaven.impl.repo.mcpconfig.MCPConfigRepo(
-                    new Cache(cache, localCache, jdkCache, foreignRepositories), false);
-                var mcp = mcprepo.get(mcVersion);
-                var srgTask = mcp.getSide("server").getTasks().getMappings();
-                if (srgTask != null) {
-                    var srgFile = srgTask.execute();
+                // The SRG mapping is cached by the Mavenizer as:
+                //   <cache>/mcp/.../mapings/official/<mc>/official-<mc>-srg.tsrg.gz
+                // We walk the cache tree to find it (the MCPConfig version subdirectory varies).
+                var pattern = "official-" + mcVersion + "-srg.tsrg.gz";
+                var srgFiles = new java.util.ArrayList<java.io.File>();
+                try (var stream = java.nio.file.Files.walk(cache.toPath(), 12)) {
+                    stream.filter(p -> p.getFileName().toString().equals(pattern))
+                        .forEach(p -> srgFiles.add(p.toFile()));
+                } catch (java.io.IOException ignored) { }
+
+                if (srgFiles.isEmpty()) {
+                    LOGGER.info("SRG mapping not yet cached for MC " + mcVersion + ", skipping AW->AT conversion");
+                } else {
+                    var srgFile = srgFiles.get(0);
                     for (var awFile : accessWideners) {
                         if (!awFile.exists()) {
                             LOGGER.warn("Access Widener file does not exist: " + awFile.getAbsolutePath());
                             continue;
                         }
-                        var atFile = net.minecraftforge.mcmaven.impl.util.AccessWidenerConverter.convert(awFile, srgFile, localCache);
+                        var atFile = net.minecraftforge.mcmaven.impl.util.AccessWidenerConverter.convert(awFile, srgFile, cache);
                         accessTransformers.add(atFile);
                         LOGGER.info("Converted AW -> AT: " + awFile.getName() + " -> " + atFile.getName());
                     }
-                } else {
-                    LOGGER.warn("SRG mapping not available, skipping AW->AT conversion");
                 }
             } catch (Exception e) {
                 LOGGER.error("Failed to convert access widener files, they will be ignored", e);
