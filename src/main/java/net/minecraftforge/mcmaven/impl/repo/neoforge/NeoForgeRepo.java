@@ -153,7 +153,7 @@ public final class NeoForgeRepo extends Repo {
                 return compiledJar;
 
             runNfrt(version, nfrtJar, nfrtHome, nfrtWork, compiledJar, sourcesJar,
-                combined ? resourcesJar : null, parchmentData, combined);
+                combined ? resourcesJar : null, parchmentData, combined, getJavaVersion(info));
             cacheKey.save();
             return compiledJar;
         });
@@ -234,15 +234,24 @@ public final class NeoForgeRepo extends Repo {
     }
 
     private void runNfrt(String neoforgeVersion, File nfrtJar, File nfrtHome,
-            File nfrtWork, File compiledJar, File sourcesJar, File resourcesJar, File parchmentData, boolean combined) {
+            File nfrtWork, File compiledJar, File sourcesJar, File resourcesJar, File parchmentData, boolean combined,
+            Integer mcJavaVersion) {
         FileUtils.ensure(nfrtHome);
         FileUtils.ensure(nfrtWork);
 
+        // NFRT recompiles Minecraft with the javac of the JDK it runs on, so the JDK version decides the
+        // synthetic lambda naming baked into the artifacts. Match Minecraft's required Java version (so we
+        // stay byte-compatible with the mods built for it), but never below NFRT_JAVA_VERSION (NFRT's own
+        // minimum and the pre-JEP-482 floor). See Constants.NFRT_JAVA_VERSION.
+        int javaVersion = mcJavaVersion != null
+            ? Math.max(mcJavaVersion, Constants.NFRT_JAVA_VERSION)
+            : Constants.NFRT_JAVA_VERSION;
+
         File jdk;
         try {
-            jdk = cache.jdks().get(Constants.NFRT_JAVA_VERSION);
+            jdk = cache.jdks().get(javaVersion);
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to find JDK " + Constants.NFRT_JAVA_VERSION + " for NFRT", e);
+            throw new IllegalStateException("Failed to find JDK " + javaVersion + " for NFRT", e);
         }
 
         var args = new ArrayList<String>(List.of(

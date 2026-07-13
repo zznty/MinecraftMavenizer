@@ -43,7 +43,12 @@ public final class Constants {
 
     // NeoFormRuntime (NFRT) — used to produce NeoForge artifacts
     public static final Artifact NFRT = Artifact.from("net.neoforged:neoform-runtime:2.0.19:all");
-    public static final int NFRT_JAVA_VERSION = 25;
+    // Minimum JDK used to run NFRT (its recompile step runs javac in-process). This is a FLOOR: the
+    // actual JDK is max(this, Minecraft's required Java version). It must stay <= 23: JDK 24 changed
+    // javac's synthetic lambda naming from a class-global counter to a per-method counter (JDK-8334037,
+    // driven by JEP 482), which makes lambda-targeting mixins compiled against the canonical
+    // (JDK-21-recompiled) NeoForge artifacts — e.g. Flywheel — fail to find their targets at runtime.
+    public static final int NFRT_JAVA_VERSION = 21;
 
     // Fabric
     // Users declare a synthetic 'net.fabricmc:fabric:<mcVersion>-<loaderVersion>' dependency (mirrors how
