@@ -139,9 +139,14 @@ public final class NeoForgeRepo extends Repo {
         // HashStore check so the (expensive, ~minutes-long) NFRT invocation is skipped on every
         // subsequent configuration/IDE-sync once the outputs already exist for the same inputs.
         var nfrtTask = Task.named("nfrt-run[" + version + "]", () -> {
+            // The JDK NFRT recompiles with determines the artifacts' synthetic lambda naming, so it must
+            // be part of the cache key — otherwise bumping the JDK (e.g. to fix JDK-24+ lambda naming)
+            // wouldn't invalidate a previously produced jar.
+            var nfrtJava = resolveNfrtJavaVersion(info);
             var cacheKey = Util.cache(compiledJar)
                 .add("neoforge", version)
                 .add("nfrt", Constants.NFRT.toString())
+                .add("nfrtJava", Integer.toString(nfrtJava))
                 .add("layout", combined ? "combined" : "separate")
                 .add("mappings", mappingChannel + '-' + mappingVersion);
             if (parchmentData != null)
@@ -153,7 +158,7 @@ public final class NeoForgeRepo extends Repo {
                 return compiledJar;
 
             runNfrt(version, nfrtJar, nfrtHome, nfrtWork, compiledJar, sourcesJar,
-                combined ? resourcesJar : null, parchmentData, combined, getJavaVersion(info));
+                combined ? resourcesJar : null, parchmentData, combined, nfrtJava);
             cacheKey.save();
             return compiledJar;
         });
@@ -235,17 +240,9 @@ public final class NeoForgeRepo extends Repo {
 
     private void runNfrt(String neoforgeVersion, File nfrtJar, File nfrtHome,
             File nfrtWork, File compiledJar, File sourcesJar, File resourcesJar, File parchmentData, boolean combined,
-            Integer mcJavaVersion) {
+            int javaVersion) {
         FileUtils.ensure(nfrtHome);
         FileUtils.ensure(nfrtWork);
-
-        // NFRT recompiles Minecraft with the javac of the JDK it runs on, so the JDK version decides the
-        // synthetic lambda naming baked into the artifacts. Match Minecraft's required Java version (so we
-        // stay byte-compatible with the mods built for it), but never below NFRT_JAVA_VERSION (NFRT's own
-        // minimum and the pre-JEP-482 floor). See Constants.NFRT_JAVA_VERSION.
-        int javaVersion = mcJavaVersion != null
-            ? Math.max(mcJavaVersion, Constants.NFRT_JAVA_VERSION)
-            : Constants.NFRT_JAVA_VERSION;
 
         File jdk;
         try {
@@ -435,6 +432,13 @@ public final class NeoForgeRepo extends Repo {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    // The JDK used to run NFRT: Minecraft's required Java version, floored at NFRT_JAVA_VERSION (NFRT's
+    // minimum, and the highest JDK that still uses the pre-JEP-482 class-global lambda naming).
+    private int resolveNfrtJavaVersion(NeoForgeInfo info) {
+        var mcJava = getJavaVersion(info);
+        return mcJava != null ? Math.max(mcJava, Constants.NFRT_JAVA_VERSION) : Constants.NFRT_JAVA_VERSION;
     }
 
     private List<Artifact> collectDependencies(NeoForgeInfo info, Artifact neoforge, boolean combined) {
