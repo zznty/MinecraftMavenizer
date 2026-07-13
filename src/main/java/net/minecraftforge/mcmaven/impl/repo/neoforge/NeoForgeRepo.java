@@ -543,6 +543,16 @@ public final class NeoForgeRepo extends Repo {
         /// FML versions that boot via the module path (e.g. MC 1.21.1 / FML 4.x); absent on newer configs.
         public List<String> modules;
         public Map<String, ModDevRun> runs;
+
+        // Deterministic across JVM runs: without this, the default Object#toString (identity hash code) leaks
+        // into NeoForgeInfo#toString, which is used as the neoforge.pom cache key — causing a spurious cache
+        // miss on every configuration. Maps are wrapped in TreeMap so iteration order can't vary.
+        @Override
+        public String toString() {
+            return "ModDevConfig[spec=" + spec + ", mcp=" + mcp + ", sources=" + sources
+                + ", universal=" + universal + ", libraries=" + libraries + ", modules=" + modules
+                + ", runs=" + (runs == null ? "null" : new java.util.TreeMap<>(runs)) + ']';
+        }
     }
 
     public static final class ModDevRun {
@@ -556,5 +566,14 @@ public final class NeoForgeRepo extends Repo {
         public boolean unitTest;
         public Map<String, String> env;
         public Map<String, String> props;
+
+        @Override
+        public String toString() {
+            return "ModDevRun[main=" + main + ", args=" + args + ", jvmArgs=" + jvmArgs
+                + ", client=" + client + ", server=" + server + ", dataGenerator=" + dataGenerator
+                + ", gameTest=" + gameTest + ", unitTest=" + unitTest
+                + ", env=" + (env == null ? "null" : new java.util.TreeMap<>(env))
+                + ", props=" + (props == null ? "null" : new java.util.TreeMap<>(props)) + ']';
+        }
     }
 }
