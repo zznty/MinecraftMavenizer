@@ -125,6 +125,13 @@ public class GradleModule {
             this.dependencies.add(dependency);
         }
 
+        public void excludeAll(String group, String module) {
+            if (this.dependencies == null)
+                return;
+            for (var dep : this.dependencies)
+                dep.exclude(group, module);
+        }
+
         public void addDependencies(Iterable<? extends Dependency> dependencies) {
             dependencies.forEach(this::addDependency);
         }
@@ -266,6 +273,16 @@ public class GradleModule {
                     this.thirdPartyCompatibility = new ThirdPartyCompatibility();
 
                 thirdPartyCompatibility.artifactSelector = selector;
+            }
+
+            public Dependency exclude(String group, String module) {
+                if (this.excludes == null)
+                    this.excludes = new ArrayList<>();
+                var exclude = new Exclude();
+                exclude.group = group;
+                exclude.module = module;
+                this.excludes.add(exclude);
+                return this;
             }
 
             public static Dependency of(Artifact artifact) {

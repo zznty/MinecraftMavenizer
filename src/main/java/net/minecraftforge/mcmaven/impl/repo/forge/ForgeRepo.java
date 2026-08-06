@@ -498,8 +498,15 @@ public final class ForgeRepo extends Repo {
         for (var descriptor : patcher.getRuntimeOnly())
             extraRuntime.add(Artifact.from(descriptor));
 
-
-        return super.classVariants(mappings, patcher.getMinecraftTasks().getJavaVersion(), libs, extraCompile);
+        var result = super.classVariants(mappings, patcher.getMinecraftTasks().getJavaVersion(), libs, extraCompile);
+        var exclusions = patcher.getPublishedPomExclusions();
+        if (!exclusions.isEmpty()) {
+            for (var variant : result) {
+                for (var excl : exclusions)
+                    variant.excludeAll(excl.groupId(), excl.artifactId());
+            }
+        }
+        return result;
     }
 
 

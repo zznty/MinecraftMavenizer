@@ -855,8 +855,8 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
                     continue;
                 exclusions.add(new PomExclusion(gid, aid));
             }
-            LOGGER.info(this.name + ": loaded " + exclusions.size() + " exclusions from published POM");
-            return exclusions;
+            LOGGER.info(this.name + ": loaded " + exclusions.size() + " raw exclusions, " + exclusions.stream().distinct().count() + " distinct");
+            return exclusions.stream().distinct().toList();
         } catch (Exception e) {
             LOGGER.info(this.name + ": failed to load exclusions from published POM: " + e);
             return List.of();
