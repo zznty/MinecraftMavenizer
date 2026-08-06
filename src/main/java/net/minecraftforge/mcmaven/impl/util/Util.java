@@ -265,7 +265,7 @@ public class Util {
             Mavenizer.cacheMiss = old;
         }
     }
-    private static final File getArtifact(Cache cache, Artifact artifact) {
+    public static final File getArtifact(Cache cache, Artifact artifact) {
         // Some libraries are on Minecraft's maven. Such as launchwrapper.
         // Rather then configure Forge's server to proxy Mojang's I add this check.
         if ("net.minecraft".equals(artifact.getGroup()))

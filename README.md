@@ -66,6 +66,9 @@ The only task consumers should care about is the `--maven` task, and thus is the
 
 Supported Artifacts:
   - `net.minecraftforge:forge`
+  - `com.cleanroommc:cleanroom` (1.12.2 Forge fork; FG3-style userdev, needs Cleanroom + Outlands as `--repository`)
+  - `net.neoforged:neoforge` (via NFRT bridge)
+  - `net.fabricmc:fabric` (synthetic `<mc>-<loader>` coordinate)
   - `net.minecraft:client`
   - `net.minecraft:client-extra`
   - `net.minecraft:server`

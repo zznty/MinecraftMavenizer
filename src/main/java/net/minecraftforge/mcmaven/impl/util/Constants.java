@@ -50,6 +50,17 @@ public final class Constants {
     // (JDK-21-recompiled) NeoForge artifacts — e.g. Flywheel — fail to find their targets at runtime.
     public static final int NFRT_JAVA_VERSION = 21;
 
+    // Cleanroom (1.12.2 Forge fork). Publishes FG3-style userdev (spec 2) under com.cleanroommc:cleanroom.
+    // Custom mcp_config builds live on Outlands; runtime deps on Cleanroom's maven.
+    public static final String CLEANROOM_MAVEN = "https://maven.cleanroommc.com/";
+    public static final String CLEANROOM_OUTLANDS_MAVEN = "https://maven.outlands.top/releases/";
+    public static final String CLEANROOM_GROUP = "com.cleanroommc";
+    public static final String CLEANROOM_NAME = "cleanroom";
+    public static final String CLEANROOM_ARTIFACT = CLEANROOM_GROUP + ':' + CLEANROOM_NAME;
+    // Cleanroom is always MC 1.12.2; its userdev pins mcp_stable 39-1.12.
+    public static final String CLEANROOM_MC_VERSION = "1.12.2";
+    public static final String CLEANROOM_DEFAULT_MAPPINGS = "stable:39-1.12";
+
     // Fabric
     // Users declare a synthetic 'net.fabricmc:fabric:<mcVersion>-<loaderVersion>' dependency (mirrors how
     // 'net.minecraftforge:forge:<mc>-<forge>' encodes both versions in one coordinate).

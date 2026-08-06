@@ -78,7 +78,9 @@ public record MinecraftMaven(
     List<File> accessTransformer,
     List<File> accessWidener,
     List<File> facadeConfigs,
-    @Nullable File outputJsonFile
+    @Nullable File outputJsonFile,
+    /** Extra maven coordinates added to the patcher recompile classpath (and as compileOnly deps). */
+    List<String> compileOnly
 ) {
     // Only 1.14.4+ has official mappings, we can support more when we add more mappings
     private static final MinecraftVersion MIN_OFFICIAL_MAPPINGS = MinecraftVersion.from("1.14.4");
@@ -106,6 +108,8 @@ public record MinecraftMaven(
             Util.filter(LOGGER, "  Access Widener:     ", accessWidener);
         if (!facadeConfigs.isEmpty())
             Util.filter(LOGGER, "  Facade Config:      ", facadeConfigs);
+        if (!compileOnly.isEmpty())
+            LOGGER.info("  Compile Only:       [" + String.join(", ", compileOnly) + ']');
         LOGGER.info();
     }
 
@@ -121,8 +125,11 @@ public record MinecraftMaven(
 
         var mcprepo = new MCPConfigRepo(this.cache, dependenciesOnly);
         if (Constants.FORGE_GROUP.equals(artifact.getGroup()) && Constants.FORGE_NAME.equals(artifact.getName())) {
-            var repo = new ForgeRepo(this.cache, mcprepo);
+            var repo = new ForgeRepo(this.cache, mcprepo, this.compileOnly);
             createForge(artifact, mcprepo, repo, outputJson);
+        } else if (Constants.CLEANROOM_GROUP.equals(artifact.getGroup()) && Constants.CLEANROOM_NAME.equals(artifact.getName())) {
+            var repo = new ForgeRepo(this.cache, mcprepo, this.compileOnly);
+            createCleanroom(artifact, repo, outputJson);
         } else if (Constants.NEOFORGE_GROUP.equals(artifact.getGroup()) && Constants.NEOFORGE_NAME.equals(artifact.getName())) {
             var repo = new NeoForgeRepo(this.cache, mcprepo);
             createNeoForge(artifact, mcprepo, repo, outputJson);
@@ -252,6 +259,23 @@ public record MinecraftMaven(
             var artifacts = repo.process(artifact, mappings, outputJson);
             finalize(artifact, mappings, artifacts, mappings.equals(primary));
         }
+    }
+
+    protected void createCleanroom(Artifact artifact, ForgeRepo repo, Map<String, Supplier<String>> outputJson) {
+        if (dependenciesOnly)
+            throw new IllegalArgumentException("Cleanroom doesn't currently support dependenciesOnly");
+
+        var version = artifact.getVersion();
+        if (version == null)
+            throw new IllegalArgumentException("No version specified for Cleanroom");
+
+        // Cleanroom is a 1.12.2-only Forge fork; userdev is FG3-style (spec 2) with mcp_stable 39-1.12.
+        var mcVersion = Constants.CLEANROOM_MC_VERSION;
+        var primary = Mappings.of(Constants.CLEANROOM_DEFAULT_MAPPINGS).withMCVersion(mcVersion);
+        var mappings = resolve(primary, mcVersion);
+
+        var artifacts = repo.processCleanroom(artifact, mappings, outputJson);
+        finalize(artifact, mappings, artifacts, mappings.equals(primary));
     }
 
     protected void createNeoForge(Artifact artifact, MCPConfigRepo mcprepo, NeoForgeRepo repo, Map<String, Supplier<String>> outputJson) {

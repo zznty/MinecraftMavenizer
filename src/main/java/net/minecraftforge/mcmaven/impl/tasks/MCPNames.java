@@ -8,7 +8,6 @@ import de.siegmar.fastcsv.reader.CsvReader;
 import net.minecraftforge.util.hash.HashFunction;
 import static net.minecraftforge.mcmaven.impl.Mavenizer.LOGGER;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang3.tuple.Pair;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -36,6 +35,8 @@ import java.util.zip.ZipFile;
 
 // TODO [Mavenizer][MCPNames] This is also in ForgeDev! Consolidate this!
 // TODO [Mavenizer][MCPNames] GARBAGE GARBAGE GARBAGE, CLEAN UP OR RE-IMPLEMENT
+record InnerIndent(String name, int indent) {}
+
 public record MCPNames(String hash, Map<String, String> names, Map<String, String> docs) {
     // We use \n here because we want to normalize line endings no matter the operating system we are running on.
     private static final String LINE_SEPERATOR = "\n"; //System.lineSeparator();
@@ -115,7 +116,7 @@ public record MCPNames(String hash, Map<String, String> names, Map<String, Strin
     List<String> rename(InputStream stream, boolean javadocs, boolean lambdas, Charset sourceFileCharset) throws IOException {
         var input = loadList(stream, sourceFileCharset);
         var lines = new ArrayList<String>(input.size());
-        var innerClasses = new LinkedList<Pair<String, Integer>>(); //pair of inner class name & indentation
+        var innerClasses = new LinkedList<InnerIndent>(); //pair of inner class name & indentation
         var _package = ""; //default package
         var blacklist = new HashSet<String>();
 
@@ -194,12 +195,12 @@ public record MCPNames(String hash, Map<String, String> names, Map<String, Strin
      * @param _package     the name of the package this file is declared to be in, in com.example format;
      * @param innerClasses current position in inner class
      */
-    private boolean injectJavadoc(List<String> lines, String line, String _package, Deque<Pair<String, Integer>> innerClasses) {
+    private boolean injectJavadoc(List<String> lines, String line, String _package, Deque<InnerIndent> innerClasses) {
         Matcher matcher;
 
         // constructors
         matcher = CONSTRUCTOR_JAVADOC_PATTERN.matcher(line);
-        boolean isConstructor = matcher.find() && !innerClasses.isEmpty() && innerClasses.peek().getLeft().contains(matcher.group("name"));
+        boolean isConstructor = matcher.find() && !innerClasses.isEmpty() && innerClasses.peek().name().contains(matcher.group("name"));
 
         // methods
         if (!isConstructor)
@@ -209,7 +210,7 @@ public record MCPNames(String hash, Map<String, String> names, Map<String, Strin
             var name = isConstructor ? "<init>" : matcher.group("name");
             var javadoc = docs.get(name);
             if (javadoc == null && !innerClasses.isEmpty() && !name.startsWith("func_") && !name.startsWith("m_")) {
-                var currentClass = innerClasses.peek().getLeft();
+                var currentClass = innerClasses.peek().name();
                 javadoc = docs.get(currentClass + '#' + name);
             }
             if (javadoc != null)
@@ -225,7 +226,7 @@ public record MCPNames(String hash, Map<String, String> names, Map<String, Strin
             String name = matcher.group("name");
             String javadoc = docs.get(name);
             if (javadoc == null && !innerClasses.isEmpty() && !name.startsWith("field_") && !name.startsWith("f_")) {
-                String currentClass = innerClasses.peek().getLeft();
+                String currentClass = innerClasses.peek().name();
                 javadoc = docs.get(currentClass + '#' + name);
             }
             if (javadoc != null)
@@ -240,8 +241,8 @@ public record MCPNames(String hash, Map<String, String> names, Map<String, Strin
         if (matcher.find()) {
             //we maintain a stack of the current (inner) class in com.example.ClassName$Inner format (along with indentation)
             //if the stack is not empty we are entering a new inner class
-            String currentClass = (innerClasses.isEmpty() ? _package : innerClasses.peek().getLeft() + "$") + matcher.group("name");
-            innerClasses.push(Pair.of(currentClass, matcher.group("indent").length()));
+            String currentClass = (innerClasses.isEmpty() ? _package : innerClasses.peek().name() + "$") + matcher.group("name");
+            innerClasses.push(new InnerIndent(currentClass, matcher.group("indent").length()));
             String javadoc = docs.get(currentClass);
             if (javadoc != null) {
                 insertAboveAnnotations(lines, JavadocAdder.buildJavadoc(matcher.group("indent"), javadoc, true));
@@ -257,10 +258,10 @@ public record MCPNames(String hash, Map<String, String> names, Map<String, Strin
             if (!innerClasses.isEmpty()) {
                 int len = matcher.group("indent").length();
                 var value = innerClasses.peek();
-                if (len == value.getRight()) {
+                if (len == value.indent()) {
                     innerClasses.pop();
-                } else if (len < value.getRight()) {
-                    LOGGER.error("Failed to properly track class blocks around class " + value.getLeft() + ":" + (lines.size() + 1));
+                } else if (len < value.indent()) {
+                    LOGGER.error("Failed to properly track class blocks around class " + value.name() + ":" + (lines.size() + 1));
                     return false;
                 }
             }
@@ -411,3 +412,4 @@ public record MCPNames(String hash, Map<String, String> names, Map<String, Strin
         }
     }
 }
+

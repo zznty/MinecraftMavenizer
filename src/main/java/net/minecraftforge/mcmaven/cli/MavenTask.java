@@ -123,6 +123,12 @@ class MavenTask {
             "A Facade Config, which allows injecting interfaces to the built artifacts.")
             .withRequiredArg().ofType(File.class);
 
+        var compileOnlyO = parser.accepts("compile-only",
+            "Extra maven coordinate added to the patcher recompile classpath and as a compileOnly dependency. " +
+            "Use when a loader's userdev omits a compile-time-only jar (not listed in config.json libraries). " +
+            "Repeatable. Format: group:name:version[:classifier][@ext]")
+            .withRequiredArg().ofType(String.class);
+
         var outputJsonO = parser.accepts("output-json",
             "File to write extended output data to. Not compatible with bulk operations.")
             .withRequiredArg().ofType(File.class);
@@ -230,7 +236,8 @@ class MavenTask {
             accessTransformers,
             awForConversion,
             new ArrayList<>(options.valuesOf(facadeConfigO)),
-            options.valueOf(outputJsonO)
+            options.valueOf(outputJsonO),
+            new ArrayList<>(options.valuesOf(compileOnlyO))
         );
         mcmaven.run(artifact);
 

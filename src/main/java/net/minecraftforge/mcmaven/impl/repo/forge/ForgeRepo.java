@@ -73,6 +73,8 @@ public final class ForgeRepo extends Repo {
 
     final MCPConfigRepo mcpconfig;
     final File globalBuild;
+    /** Caller-supplied compileOnly coordinates (see --compile-only). Not hardcoded per-loader. */
+    final List<String> extraCompileOnly;
 
     /**
      * Creates a new Forge repository.
@@ -81,9 +83,14 @@ public final class ForgeRepo extends Repo {
      * @param mcpconfig The MCPConfig repo
      */
     public ForgeRepo(Cache cache, MCPConfigRepo mcpconfig) {
+        this(cache, mcpconfig, List.of());
+    }
+
+    public ForgeRepo(Cache cache, MCPConfigRepo mcpconfig, List<String> extraCompileOnly) {
         super(cache);
         this.mcpconfig = mcpconfig;
         this.globalBuild = new File(cache.root(), "forge/.global");
+        this.extraCompileOnly = extraCompileOnly == null ? List.of() : List.copyOf(extraCompileOnly);
     }
 
     public static boolean isSupported(String version) {
@@ -141,10 +148,29 @@ public final class ForgeRepo extends Repo {
                 case v4:
                 case v5:
                 case v6:
-                    return processV3(version, mappings, outputJson);
+                    return processV3(artifact, getUserdev(version), mappings, outputJson);
                 default:
                     throw new IllegalArgumentException("Forge version %s is not supported yet".formatted(version));
             }
+        } finally {
+            LOGGER.pop(indent);
+        }
+    }
+
+    /**
+     * Cleanroom publishes an FG3-style {@code userdev} jar (patcher config spec 2) under
+     * {@code com.cleanroommc:cleanroom}. The pipeline is the same as Forge userdev3 / FG3+.
+     */
+    public List<PendingArtifact> processCleanroom(Artifact artifact, Mappings mappings, Map<String, Supplier<String>> outputJson) {
+        var version = artifact.getVersion();
+        if (version == null)
+            throw new IllegalArgumentException("No version specified for Cleanroom");
+
+        LOGGER.info("Processing Cleanroom (userdev): " + version);
+        var indent = LOGGER.push();
+        try {
+            var userdev = Artifact.from(Constants.CLEANROOM_GROUP, Constants.CLEANROOM_NAME, version, "userdev", "jar");
+            return processV3(artifact, userdev, mappings, outputJson);
         } finally {
             LOGGER.pop(indent);
         }
@@ -205,7 +231,7 @@ public final class ForgeRepo extends Repo {
         var classes = pending("Classes", classesTask, name, false, () -> classVariants(baseMappings, dev, mappingCoords));
         var metadata = pending("Metadata", metadata(build, dev, dev.getRuns()), name.withClassifier("metadata").withExtension("zip"), false, metadataVariant());
 
-        var pom = pending("Maven POM", pom(mappings.getFolder(build), dev, version, null, mappingCoords), name.withExtension("pom"), false);
+        var pom = pending("Maven POM", pom(mappings.getFolder(build), dev, name, null, mappingCoords), name.withExtension("pom"), false);
 
         // Gradle only allows downloading artifacts from one repo, so we need to pull in any classifers that we reference
         var classifiers = getClassifieres(name, dev.getLibraries(), new HashMap<>());
@@ -247,11 +273,10 @@ public final class ForgeRepo extends Repo {
     ///   - pom:
     ///     - Standard maven pom file that contains all dependency information.
     // Made this an MD comment to make it easier to read in IDE - Jonathan
-    private List<PendingArtifact> processV3(String version, Mappings baseMappings, Map<String, Supplier<String>> outputJson) {
-        var name = Artifact.from(Constants.FORGE_GROUP, Constants.FORGE_NAME, version);
-        var userdev = getUserdev(version);
-
-        var build = new File(this.cache.root(), "forge/" + userdev.getFolder());
+    private List<PendingArtifact> processV3(Artifact name, Artifact userdev, Mappings baseMappings, Map<String, Supplier<String>> outputJson) {
+        var version = name.getVersion();
+        var cacheKey = name.getGroup() + '/' + name.getName();
+        var build = new File(this.cache.root(), cacheKey + '/' + userdev.getFolder());
         var jdks = this.cache.jdks();
 
         var patcher = new Patcher(build, this, userdev);
@@ -279,7 +304,7 @@ public final class ForgeRepo extends Repo {
         var classes = pending("Classes", classesTask, name, false, () -> classVariants(baseMappings, patcher, extraCoords, mappingCoords));
         var metadata = pending("Metadata", metadata(build, patcher, patcher.config.runs), name.withClassifier("metadata").withExtension("zip"), false, metadataVariant());
 
-        var pom = pending("Maven POM", pom(mappingFolder, patcher, version, extraCoords, mappingCoords), name.withExtension("pom"), false);
+        var pom = pending("Maven POM", pom(mappingFolder, patcher, name, extraCoords, mappingCoords), name.withExtension("pom"), false);
 
         var extraOutput = this.mcpconfig.processExtra(Constants.MC_GROUP + ':' + Constants.MC_CLIENT, patcher.getMCP().getName().getVersion());
 
@@ -340,7 +365,7 @@ public final class ForgeRepo extends Repo {
     }
 
     private static Task metadata(File build, ForgeVersionCommon forge, Map<String, RunConfig> runs) {
-        return Task.named("metadata[forge]", Task.deps(forge.getMinecraftTasks().versionJson), () -> {
+        return Task.named("metadata[patcher]", Task.deps(forge.getMinecraftTasks().versionJson), () -> {
             var output = new File(build, "metadata.zip");
 
             // metadata
@@ -401,13 +426,14 @@ public final class ForgeRepo extends Repo {
         });
     }
 
-    private static Task pom(File build, ForgeVersionCommon forge, String version, @Nullable Artifact clientExtra, @Nullable Artifact mappings) {
-        return Task.named("pom[forge]", () -> {
-            var output = new File(build, "forge.pom");
+    private static Task pom(File build, ForgeVersionCommon forge, Artifact name, @Nullable Artifact clientExtra, @Nullable Artifact mappings) {
+        return Task.named("pom[" + name.getName() + ']', () -> {
+            var output = new File(build, name.getName() + ".pom");
 
             var cache = Util.cache(output)
                 .addKnown("data", forge.getDataHash())
-                .addKnown("code-version", "1");
+                .addKnown("code-version", "1")
+                .addKnown("coords", name.toString());
 
             if (clientExtra != null)
                 cache.addKnown("extra", clientExtra.toString());
@@ -418,7 +444,7 @@ public final class ForgeRepo extends Repo {
             if (Mavenizer.checkCache(output, cache))
                 return output;
 
-            var builder = new POMBuilder(Constants.FORGE_GROUP, Constants.FORGE_NAME, version).preferGradleModule().dependencies(dependencies -> {
+            var builder = new POMBuilder(name.getGroup(), name.getName(), name.getVersion()).preferGradleModule().dependencies(dependencies -> {
                 if (clientExtra != null)
                     dependencies.add(clientExtra);
 
