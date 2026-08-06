@@ -432,7 +432,7 @@ public final class ForgeRepo extends Repo {
 
             var cache = Util.cache(output)
                 .addKnown("data", forge.getDataHash())
-                .addKnown("code-version", "1")
+                .addKnown("code-version", "2")
                 .addKnown("coords", name.toString());
 
             if (clientExtra != null)

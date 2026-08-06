@@ -254,11 +254,8 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
     @Override
     public void forAllLibraries(Consumer<Artifact> consumer, Predicate<Artifact> filter) {
         var seen = new HashSet<String>();
-        var excluded = loadPublishedPomExclusions();
         Consumer<Artifact> emit = a -> {
             if (filter != null && !filter.test(a))
-                return;
-            if (isExcludedBy(excluded, a))
                 return;
             var key = a.getGroup() + ':' + a.getName() + ':' + a.getClassifier();
             if (!seen.add(key))
@@ -327,15 +324,14 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
         var classpath = new ArrayList<File>();
         var cache = this.forge.getCache();
         var seen = new HashSet<String>();
-        var excluded = loadPublishedPomExclusions();
+
         for (var lib : this.getCompileOnly()) {
             var art = Artifact.from(lib);
             if (seen.add(art.getGroup() + ':' + art.getName()))
                 classpath.add(Util.getArtifact(cache, art));
         }
+
         Consumer<Artifact> add = art -> {
-            if (isExcludedBy(excluded, art))
-                return;
             if (!seen.add(art.getGroup() + ':' + art.getName() + ':' + art.getClassifier()))
                 return;
             classpath.add(Util.getArtifact(cache, art));
@@ -346,6 +342,7 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
             add.accept(Artifact.from(lib));
         for (var lib : this.getMCP().getMinecraftTasks().getClientLibraries())
             add.accept(lib.artifact());
+
         return classpath;
     }
 
@@ -815,9 +812,15 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
     @SuppressWarnings("deprecation")
     @Override
     public List<String> getCompileOnly() {
-        if (this.config.extraDependencies == null || this.config.extraDependencies.compileOnly == null)
-            return Collections.emptyList();
-        return this.config.extraDependencies.compileOnly;
+        var configCo = this.config.extraDependencies != null && this.config.extraDependencies.compileOnly != null
+            ? this.config.extraDependencies.compileOnly : Collections.<String>emptyList();
+        var extra = this.forge.extraCompileOnly;
+        if (extra.isEmpty())
+            return configCo;
+        var merged = new ArrayList<String>(configCo.size() + extra.size());
+        merged.addAll(configCo);
+        merged.addAll(extra);
+        return merged;
     }
 
     @SuppressWarnings("deprecation")
@@ -836,8 +839,10 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
     private List<PomExclusion> loadPublishedPomExclusions() {
         try {
             var pom = this.forge.getCache().maven().download(this.name.withClassifier(null).withExtension("pom"));
-            if (!pom.exists())
+            if (!pom.exists()) {
+                LOGGER.info(this.name + ": no published POM at " + pom.getAbsolutePath());
                 return List.of();
+            }
             var bytes = java.nio.file.Files.readAllBytes(pom.toPath());
             var s = new String(bytes, StandardCharsets.UTF_8);
             var exclusions = new ArrayList<PomExclusion>();
@@ -849,10 +854,11 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
                 if ("*".equals(gid) && "*".equals(aid))
                     continue;
                 exclusions.add(new PomExclusion(gid, aid));
-
             }
+            LOGGER.info(this.name + ": loaded " + exclusions.size() + " exclusions from published POM");
             return exclusions;
         } catch (Exception e) {
+            LOGGER.info(this.name + ": failed to load exclusions from published POM: " + e);
             return List.of();
         }
     }
