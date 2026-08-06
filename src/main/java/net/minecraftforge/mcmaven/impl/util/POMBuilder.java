@@ -103,6 +103,17 @@ public final class POMBuilder {
                 if (dependency.scope != null)
                     set(doc, dep, "scope", dependency.scope.toString());
 
+                if (!dependency.exclusions.isEmpty()) {
+                    var exclusions = doc.createElement("exclusions");
+                    for (var excl : dependency.exclusions) {
+                        var e = doc.createElement("exclusion");
+                        set(doc, e, "groupId", excl.groupId());
+                        set(doc, e, "artifactId", excl.artifactId());
+                        exclusions.appendChild(e);
+                    }
+                    dep.appendChild(exclusions);
+                }
+
                 dependencies.appendChild(dep);
             }
             project.appendChild(dependencies);
@@ -144,13 +155,27 @@ public final class POMBuilder {
             return dep;
         }
 
+        public void replace(Dependency old, Dependency replacement) {
+            this.dependencies.remove(old);
+            this.dependencies.add(replacement);
+        }
+
         // https://maven.apache.org/pom.html#POM_Relationships
-        public record Dependency(Artifact artifact, @Nullable Scope scope) implements Comparable<Dependency> {
+        public record Dependency(Artifact artifact, @Nullable Scope scope, java.util.List<Exclusion> exclusions) implements Comparable<Dependency> {
+            public Dependency(Artifact artifact, @Nullable Scope scope) {
+                this(artifact, scope, java.util.List.of());
+            }
+
+            public Dependency withExclusions(java.util.List<Exclusion> exclusions) {
+                return new Dependency(artifact, scope, exclusions);
+            }
+
             @Override
             public boolean equals(Object obj) {
-                return obj instanceof Dependency(Artifact artifact, Scope scope) &&
-                    Objects.equals(this.artifact, artifact) &&
-                    Objects.equals(this.scope, scope);
+                return obj instanceof Dependency(Artifact a, Scope s, java.util.List<Exclusion> e) &&
+                    Objects.equals(this.artifact, a) &&
+                    Objects.equals(this.scope, s) &&
+                    Objects.equals(this.exclusions, e);
             }
 
             @Override
@@ -167,7 +192,8 @@ public final class POMBuilder {
                     return super.toString().toLowerCase(Locale.ENGLISH);
                 }
             }
+
+            public record Exclusion(String groupId, String artifactId) { }
         }
     }
-
 }

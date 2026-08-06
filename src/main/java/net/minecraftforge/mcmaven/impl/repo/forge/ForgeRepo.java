@@ -451,7 +451,18 @@ public final class ForgeRepo extends Repo {
                 if (mappings != null)
                     dependencies.add(mappings);
 
-                forge.forAllLibraries(dependencies::add, Artifact::hasNoOs);
+                var exclusions = forge.getPublishedPomExclusions();
+                if (!exclusions.isEmpty()) {
+                    var exclusionList = exclusions.stream()
+                        .map(e -> new Dependency.Exclusion(e.groupId(), e.artifactId()))
+                        .toList();
+                    forge.forAllLibraries(artifact -> {
+                        var dep = dependencies.add(artifact);
+                        dependencies.replace(dep, dep.withExclusions(exclusionList));
+                    }, Artifact::hasNoOs);
+                } else {
+                    forge.forAllLibraries(dependencies::add, Artifact::hasNoOs);
+                }
 
                 // Following https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html#dependency-scope
                 // PROVIDED == 'compileOnly'

@@ -835,20 +835,21 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
 
     private List<PomExclusion> loadPublishedPomExclusions() {
         try {
-            var pom = this.forge.getCache().maven().download(this.name.withExtension("pom"));
+            var pom = this.forge.getCache().maven().download(this.name.withClassifier(null).withExtension("pom"));
             if (!pom.exists())
                 return List.of();
             var bytes = java.nio.file.Files.readAllBytes(pom.toPath());
             var s = new String(bytes, StandardCharsets.UTF_8);
             var exclusions = new ArrayList<PomExclusion>();
-            var p = Pattern.compile("<exclusion>\\s*<groupId>([^<]+)</groupId>\\s*<artifactId>([^<]+)</artifactId>\\s*</exclusion>");
+            var p = Pattern.compile("<exclusion>\\s*<groupId>([^<]+)</groupId>\\s*<artifactId>([^<]*)</artifactId>\\s*</exclusion>");
             var m = p.matcher(s);
             while (m.find()) {
                 String gid = m.group(1);
-                String aid = m.group(2);
+                String aid = m.group(2).isEmpty() ? "*" : m.group(2);
                 if ("*".equals(gid) && "*".equals(aid))
                     continue;
                 exclusions.add(new PomExclusion(gid, aid));
+
             }
             return exclusions;
         } catch (Exception e) {
@@ -863,10 +864,15 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
         return false;
     }
 
-    private record PomExclusion(String groupId, String artifactId) {
+    public record PomExclusion(String groupId, String artifactId) {
         boolean matches(Artifact a) {
             return groupId.equals(a.getGroup())
                 && (artifactId.equals("*") || artifactId.equals(a.getName()));
         }
+    }
+
+    @Override
+    public List<PomExclusion> getPublishedPomExclusions() {
+        return loadPublishedPomExclusions();
     }
 }

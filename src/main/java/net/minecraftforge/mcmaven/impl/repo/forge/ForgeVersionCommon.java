@@ -32,5 +32,9 @@ public interface ForgeVersionCommon {
     List<String> getCompileOnly();
     List<String> getRuntimeOnly();
 
+
+    default java.util.List<net.minecraftforge.mcmaven.impl.repo.forge.Patcher.PomExclusion> getPublishedPomExclusions() {
+        return List.of();
+    }
     MinecraftTasks getMinecraftTasks();
 }
