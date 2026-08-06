@@ -254,8 +254,11 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
     @Override
     public void forAllLibraries(Consumer<Artifact> consumer, Predicate<Artifact> filter) {
         var seen = new HashSet<String>();
+        var excluded = loadPublishedPomExclusions();
         Consumer<Artifact> emit = a -> {
             if (filter != null && !filter.test(a))
+                return;
+            if (isExcludedBy(excluded, a))
                 return;
             var key = a.getGroup() + ':' + a.getName() + ':' + a.getClassifier();
             if (!seen.add(key))
@@ -265,6 +268,28 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
         this.forAllLibrariesInternal(emit, this.getLibraries());
         this.forAllLibrariesInternal(emit, this.getMCPSide().getMCPConfigLibraries());
         this.forAllLibrariesInternal(emit, this.getMCPSide().getMCLibraries());
+
+        // Also emit natives-<os> classifiers for LWJGL3 jars: the base artifact (e.g.
+        // org.lwjgl:lwjgl-glfw:3.4.1) ships no OS-native libraries; the native .so files
+        // live in classifier jars (e.g. lwjgl-glfw:3.4.1:natives-linux) which LWJGL3's
+        // SharedLibraryLoader loads from the classpath. Scan all three library sources
+        // (userdev, mcp_config, free memory version.json) since LWJGL3 may come from any.
+        var os = net.minecraftforge.util.os.OS.current();
+        Consumer<Artifact> synthNative = a -> {
+            if (!"org.lwjgl".equals(a.getGroup())
+                || a.getVersion() == null
+                || !a.getVersion().startsWith("3."))
+                return;
+            // Synthesize the native classifier even if the base artifact has a different
+            // classifier (e.g. lwjgl:3.4.1:unsafe also needs lwjgl:3.4.1:natives-linux).
+            var nativeArtifact = a.withClassifier("natives-" + os.key());
+            var key = nativeArtifact.getGroup() + ':' + nativeArtifact.getName() + ':' + nativeArtifact.getClassifier();
+            if (!seen.contains(key))
+                consumer.accept(nativeArtifact);
+        };
+        this.getLibraries().forEach(synthNative);
+        this.getMCPSide().getMCPConfigLibraries().forEach(synthNative);
+        this.getMCPSide().getMCLibraries().forEach(synthNative);
     }
 
     private void forAllLibrariesInternal(Consumer<? super Artifact> consumer, Iterable<? extends Artifact> libraries) {
