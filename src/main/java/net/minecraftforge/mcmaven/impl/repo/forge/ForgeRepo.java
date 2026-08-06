@@ -313,33 +313,8 @@ public final class ForgeRepo extends Repo {
         var classifiers = new HashMap<Artifact, PendingArtifact>();
         for (var parent : patcher.getStack())
             getClassifieres(name, parent.getLibraries(), classifiers);
-
-        // Also synthesize natives-<os> classifiers for LWJGL3 dependencies (LWJGL3 self-extracts
-        // from classifier jars, not from the base artifact). Pattern: org.lwjgl group + version 3.x.
-        var currentOs = net.minecraftforge.util.os.OS.current();
-        for (var parent : patcher.getStack()) {
-            for (var artifact : parent.getLibraries()) {
-                if (!"org.lwjgl".equals(artifact.getGroup())
-                    || artifact.getVersion() == null
-                    || !artifact.getVersion().startsWith("3.")
-                    || artifact.getClassifier() != null)
-                    continue;
-                var nativeClassifier = "natives-" + currentOs.key();
-                var nativeArtifact = artifact.withClassifier(nativeClassifier);
-                if (!classifiers.containsKey(nativeArtifact)) {
-                    classifiers.put(nativeArtifact,
-                        pending("Classifier-" + nativeArtifact.getClassifier(),
-                            Task.named(
-                                "classifier[" + nativeArtifact.getClassifier() + '@' + nativeArtifact.getExtension() + ']',
-                                () -> this.cache.maven().download(nativeArtifact)
-                            ),
-                            nativeArtifact,
-                            false
-                        )
-                    );
-                }
-            }
-        }
+        // LWJGL3 :natives-<os> deps are emitted by Patcher.forAllLibraries (OS-tagged) and
+        // resolved from Maven Central by Gradle — not mirrored as local classifiers.
 
         addJsonData(outputJson, patcher);
 

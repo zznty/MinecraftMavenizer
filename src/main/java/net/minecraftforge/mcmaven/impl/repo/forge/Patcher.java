@@ -269,27 +269,29 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
         this.forAllLibrariesInternal(emit, this.getMCPSide().getMCPConfigLibraries());
         this.forAllLibrariesInternal(emit, this.getMCPSide().getMCLibraries());
 
-        // Also emit natives-<os> classifiers for LWJGL3 jars: the base artifact (e.g.
-        // org.lwjgl:lwjgl-glfw:3.4.1) ships no OS-native libraries; the native .so files
-        // live in classifier jars (e.g. lwjgl-glfw:3.4.1:natives-linux) which LWJGL3's
-        // SharedLibraryLoader loads from the classpath. Scan all three library sources
-        // (userdev, mcp_config, free memory version.json) since LWJGL3 may come from any.
-        var os = net.minecraftforge.util.os.OS.current();
-        Consumer<Artifact> synthNative = a -> {
-            if (!"org.lwjgl".equals(a.getGroup())
-                || a.getVersion() == null
-                || !a.getVersion().startsWith("3."))
-                return;
-            // Synthesize the native classifier even if the base artifact has a different
-            // classifier (e.g. lwjgl:3.4.1:unsafe also needs lwjgl:3.4.1:natives-linux).
-            var nativeArtifact = a.withClassifier("natives-" + os.key());
-            var key = nativeArtifact.getGroup() + ':' + nativeArtifact.getName() + ':' + nativeArtifact.getClassifier();
-            if (!seen.contains(key))
-                consumer.accept(nativeArtifact);
-        };
-        this.getLibraries().forEach(synthNative);
-        this.getMCPSide().getMCPConfigLibraries().forEach(synthNative);
-        this.getMCPSide().getMCLibraries().forEach(synthNative);
+        // LWJGL3 base jars ship no OS natives; SharedLibraryLoader loads them from
+        // :natives-<os> classifier jars (see NeoForgeRepo version.json handling and
+        // Cleanroom getLWJGLNatives). Userdev lists only base coords — synthesize the
+        // platform classifiers for every major OS and tag Artifact OS so Repo.classVariants
+        // routes them into classes-linux/macos/windows (POM stays hasNoOs by design).
+        for (var targetOs : List.of(
+                net.minecraftforge.util.os.OS.LINUX,
+                net.minecraftforge.util.os.OS.MACOS,
+                net.minecraftforge.util.os.OS.WINDOWS)) {
+            for (var source : List.of(
+                    this.getLibraries(),
+                    this.getMCPSide().getMCPConfigLibraries(),
+                    this.getMCPSide().getMCLibraries())) {
+                for (var a : source) {
+                    if (!"org.lwjgl".equals(a.getGroup())
+                            || a.getVersion() == null
+                            || !a.getVersion().startsWith("3."))
+                        continue;
+                    // Replace any classifier (e.g. :unsafe) with the natives classifier.
+                    emit.accept(a.withClassifier("natives-" + targetOs.key()).withOS(targetOs));
+                }
+            }
+        }
     }
 
     private void forAllLibrariesInternal(Consumer<? super Artifact> consumer, Iterable<? extends Artifact> libraries) {
