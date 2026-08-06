@@ -253,17 +253,26 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
 
     @Override
     public void forAllLibraries(Consumer<Artifact> consumer, Predicate<Artifact> filter) {
-        this.forAllLibrariesInternal(consumer, filter, this.getMCPSide().getMCLibraries());
-        this.forAllLibrariesInternal(consumer, filter, this.getMCPSide().getMCPConfigLibraries());
-        this.forAllLibrariesInternal(consumer, filter, this.getLibraries());
+        var seen = new HashSet<String>();
+        var excluded = loadPublishedPomExclusions();
+        Consumer<Artifact> emit = a -> {
+            if (filter != null && !filter.test(a))
+                return;
+            if (isExcludedBy(excluded, a))
+                return;
+            var key = a.getGroup() + ':' + a.getName() + ':' + a.getClassifier();
+            if (!seen.add(key))
+                return;
+            consumer.accept(a);
+        };
+        this.forAllLibrariesInternal(emit, this.getLibraries());
+        this.forAllLibrariesInternal(emit, this.getMCPSide().getMCPConfigLibraries());
+        this.forAllLibrariesInternal(emit, this.getMCPSide().getMCLibraries());
     }
 
-    // to avoid duplicate code
-    private void forAllLibrariesInternal(Consumer<? super Artifact> consumer, @Nullable Predicate<? super Artifact> filter, Iterable<? extends Artifact> libraries) {
-        for (var library : libraries) {
-            if (filter == null || filter.test(library))
-                consumer.accept(library);
-        }
+    private void forAllLibrariesInternal(Consumer<? super Artifact> consumer, Iterable<? extends Artifact> libraries) {
+        for (var library : libraries)
+            consumer.accept(library);
     }
 
     @Override
@@ -316,22 +325,27 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
     @Override
     public List<File> getClasspath() {
         var classpath = new ArrayList<File>();
-
-        // minecraft version.json libs + mcpconfig libs + userdev libs
-        // also for module metadata (same order)
-        for (var lib : this.getMCP().getMinecraftTasks().getClientLibraries())
-            classpath.add(lib.file());
-
         var cache = this.forge.getCache();
-
-        for (var lib : this.getMCP().getConfig().getLibraries(MCPSide.JOINED)) {
-            classpath.add(Util.getArtifact(cache, lib));
+        var seen = new HashSet<String>();
+        var excluded = loadPublishedPomExclusions();
+        for (var lib : this.getCompileOnly()) {
+            var art = Artifact.from(lib);
+            if (seen.add(art.getGroup() + ':' + art.getName()))
+                classpath.add(Util.getArtifact(cache, art));
         }
-
-        for (var lib : this.config.libraries) {
-            classpath.add(Util.getArtifact(cache, lib));
-        }
-
+        Consumer<Artifact> add = art -> {
+            if (isExcludedBy(excluded, art))
+                return;
+            if (!seen.add(art.getGroup() + ':' + art.getName() + ':' + art.getClassifier()))
+                return;
+            classpath.add(Util.getArtifact(cache, art));
+        };
+        for (var lib : this.config.libraries)
+            add.accept(Artifact.from(lib));
+        for (var lib : this.getMCP().getConfig().getLibraries(MCPSide.JOINED))
+            add.accept(Artifact.from(lib));
+        for (var lib : this.getMCP().getMinecraftTasks().getClientLibraries())
+            add.accept(lib.artifact());
         return classpath;
     }
 
@@ -817,5 +831,42 @@ public class Patcher implements Supplier<Task>, ForgeVersionCommon {
     @Override
     public MinecraftTasks getMinecraftTasks() {
         return this.getMCP().getMinecraftTasks();
+    }
+
+    private List<PomExclusion> loadPublishedPomExclusions() {
+        try {
+            var pom = this.forge.getCache().maven().download(this.name.withExtension("pom"));
+            if (!pom.exists())
+                return List.of();
+            var bytes = java.nio.file.Files.readAllBytes(pom.toPath());
+            var s = new String(bytes, StandardCharsets.UTF_8);
+            var exclusions = new ArrayList<PomExclusion>();
+            var p = Pattern.compile("<exclusion>\\s*<groupId>([^<]+)</groupId>\\s*<artifactId>([^<]+)</artifactId>\\s*</exclusion>");
+            var m = p.matcher(s);
+            while (m.find()) {
+                String gid = m.group(1);
+                String aid = m.group(2);
+                if ("*".equals(gid) && "*".equals(aid))
+                    continue;
+                exclusions.add(new PomExclusion(gid, aid));
+            }
+            return exclusions;
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    private static boolean isExcludedBy(List<PomExclusion> excluded, Artifact artifact) {
+        for (var e : excluded)
+            if (e.matches(artifact))
+                return true;
+        return false;
+    }
+
+    private record PomExclusion(String groupId, String artifactId) {
+        boolean matches(Artifact a) {
+            return groupId.equals(a.getGroup())
+                && (artifactId.equals("*") || artifactId.equals(a.getName()));
+        }
     }
 }
