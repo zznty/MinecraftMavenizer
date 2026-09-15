@@ -389,6 +389,10 @@ public final class MCPConfigRepo extends Repo {
         });
     }
 
+    public static Task metadata(MCPSide side) {
+        return metadata(side.getBuildFolder(), side.getName(), side.getMCP().getMinecraftTasks());
+    }
+
     private static Task metadata(File build, String side, MinecraftTasks minecraftTasks) {
         return Task.named("metadata[" + side + ']', Task.deps(minecraftTasks.versionJson), () -> {
             var output = new File(build, "metadata.zip");

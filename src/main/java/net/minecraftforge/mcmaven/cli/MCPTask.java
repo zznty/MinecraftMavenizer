@@ -242,6 +242,7 @@ class MCPTask {
         this.data.put("dependencies", deps.stream().collect(Collectors.joining(",")));
 
         this.data.put("extra", local(side.getTasks().getExtra().execute(), prefix + "/extra.jar"));
+        this.data.put("metadata", local(MCPConfigRepo.metadata(this.side).execute(), prefix + "/metadata.zip"));
     }
 
     private String classes() {

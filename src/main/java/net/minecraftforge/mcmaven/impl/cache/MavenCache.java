@@ -255,6 +255,9 @@ public sealed class MavenCache permits MinecraftMavenCache {
 
                     try {
                         var chash = func.hash(target);
+                        // Upstream normalises to `!rhash.startsWith(chash)`; we strip the trailing newline /
+                        // `<hash>  <filename>` GNU coreutils form (see above) and compare case-insensitively,
+                        // which covers the same trailing-newline case without accepting suffix garbage.
                         if (!chash.equalsIgnoreCase(rhash)) {
                             LOGGER.error("Outdated cached file: " + target.getAbsolutePath());
                             LOGGER.error("Expected: " + rhash);
