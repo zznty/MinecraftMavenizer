@@ -86,12 +86,12 @@ changelog {
 
 publishing {
     repositories {
-        // Our Reposilite maven (maven.zznty.ru). Snapshots vs releases is picked from the version.
+        // Our Reposilite maven (maven.zznty.net). Snapshots vs releases is picked from the version.
         maven {
             name = 'zznty'
             url = version.toString().endsWith('-SNAPSHOT')
-                ? 'https://maven.zznty.ru/snapshots'
-                : 'https://maven.zznty.ru/releases'
+                ? 'https://maven.zznty.net/snapshots'
+                : 'https://maven.zznty.net/releases'
             credentials {
                 username = providers.environmentVariable('MAVEN_USER').orElse('').get()
                 password = providers.environmentVariable('MAVEN_PASSWORD').orElse('').get()
